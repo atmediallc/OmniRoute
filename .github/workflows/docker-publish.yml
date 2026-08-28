@@ -118,7 +118,7 @@ jobs:
     name: Build Docker (${{ matrix.platform }})
     needs: prepare
     if: needs.prepare.outputs.skip != 'true'
-    runs-on: self-hosted
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
