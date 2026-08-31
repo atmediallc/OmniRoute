@@ -22,12 +22,12 @@
 
 import { logger } from "@omniroute/open-sse/utils/logger.ts";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error.ts";
-import { getExecutor } from "@omniroute/open-sse/executors/index.ts";
 import type { BaseExecutor } from "@omniroute/open-sse/executors/base";
 import { getCodexUsage } from "@omniroute/open-sse/services/usage/codex.ts";
-import { getSettings, getProviderConnections, updateProviderConnection } from "@/lib/localDb";
+import { getSettings } from "@/lib/db/settings";
+import { getProviderConnections, updateProviderConnection } from "@/lib/db/providers";
 import { isConnectionUnavailableToAuxiliaryActivity } from "@/lib/exclusiveLeaseIsolation";
-import { refreshAndUpdateCredentials } from "@/lib/usage/providerLimits";
+import { refreshAndUpdateCredentialsWithResolver } from "@/lib/usage/providerLimits/credentialRefresh";
 import { getCircuitBreaker } from "@/shared/utils/circuitBreaker";
 import {
   QUOTA_AUTOPING_FAILURE_COOLDOWN_MS,
@@ -57,9 +57,7 @@ export interface QuotaAutoPingConnection {
 
 export interface QuotaAutoPingDeps {
   getSettings: () => Promise<JsonRecord>;
-  getProviderConnections: (
-    filter: JsonRecord
-  ) => Promise<QuotaAutoPingConnection[]>;
+  getProviderConnections: (filter: JsonRecord) => Promise<QuotaAutoPingConnection[]>;
   updateProviderConnection: (id: string, data: JsonRecord) => Promise<unknown>;
   refreshAndUpdateCredentials: (
     connection: QuotaAutoPingConnection
@@ -68,7 +66,7 @@ export interface QuotaAutoPingDeps {
     accessToken?: string,
     providerSpecificData?: JsonRecord
   ) => Promise<JsonRecord>;
-  getExecutor: (provider: string) => Promise<BaseExecutor>;
+  getExecutor: (provider: "codex") => Promise<BaseExecutor>;
   canExecuteProvider: (provider: string) => boolean;
   isConnectionUnavailableToAuxiliaryActivity: (connectionId: string) => Promise<boolean>;
 }
@@ -83,15 +81,33 @@ export function createQuotaAutoPingState(): QuotaAutoPingState {
   return { running: false, resetCache: {}, failureCache: {} };
 }
 
+let codexExecutorPromise: Promise<BaseExecutor> | null = null;
+
+async function loadQuotaAutoPingExecutor(provider: string): Promise<BaseExecutor> {
+  if (provider !== "codex") {
+    throw new Error(`Quota auto-ping does not support provider "${provider}"`);
+  }
+
+  try {
+    codexExecutorPromise ??= import("@omniroute/open-sse/executors/codex.ts").then(
+      ({ CodexExecutor }) => new CodexExecutor()
+    );
+    return await codexExecutorPromise;
+  } catch (error) {
+    codexExecutorPromise = null;
+    throw error;
+  }
+}
+
 export function createDefaultQuotaAutoPingDeps(): QuotaAutoPingDeps {
   return {
     getSettings,
     getProviderConnections,
     updateProviderConnection,
     refreshAndUpdateCredentials: async (connection) =>
-      refreshAndUpdateCredentials(connection as never),
+      refreshAndUpdateCredentialsWithResolver(connection, loadQuotaAutoPingExecutor),
     getCodexUsage,
-    getExecutor,
+    getExecutor: loadQuotaAutoPingExecutor,
     canExecuteProvider: (provider) => getCircuitBreaker(provider).canExecute(),
     isConnectionUnavailableToAuxiliaryActivity,
   };
@@ -152,11 +168,7 @@ function wasPingedRecently(
   return Number.isFinite(lastPingAtMs) && nowMs - lastPingAtMs < intervalMs;
 }
 
-function shouldSkipAfterFailure(
-  state: QuotaAutoPingState,
-  key: string,
-  nowMs: number
-): boolean {
+function shouldSkipAfterFailure(state: QuotaAutoPingState, key: string, nowMs: number): boolean {
   const failedAt = state.failureCache[key];
   return Boolean(failedAt) && nowMs - failedAt < QUOTA_AUTOPING_FAILURE_COOLDOWN_MS;
 }
@@ -272,8 +284,8 @@ async function isPingCandidateBlocked(
   // resetAt — the guard is preserved here for that case.
   return Boolean(
     !providerConfig.pingWhenResetAtSlides &&
-      cachedReset &&
-      nowMs < new Date(cachedReset).getTime() - QUOTA_AUTOPING_REFRESH_AHEAD_MS
+    cachedReset &&
+    nowMs < new Date(cachedReset).getTime() - QUOTA_AUTOPING_REFRESH_AHEAD_MS
   );
 }
 
@@ -331,7 +343,18 @@ async function pingConnection(
 ): Promise<void> {
   const key = cacheKey(provider, connection.id);
   const cachedReset = state.resetCache[key];
-  if (await isPingCandidateBlocked(connection, provider, providerConfig, deps, state, key, cachedReset, nowMs)) {
+  if (
+    await isPingCandidateBlocked(
+      connection,
+      provider,
+      providerConfig,
+      deps,
+      state,
+      key,
+      cachedReset,
+      nowMs
+    )
+  ) {
     return;
   }
 
@@ -346,7 +369,9 @@ async function pingConnection(
   state.resetCache[key] = resetAt;
 
   const resetKey = normalizeResetKey(resetAt);
-  if (!shouldSendPing(providerConfig, quotas, quota, cachedReset, resetAt, current, resetKey, nowMs)) {
+  if (
+    !shouldSendPing(providerConfig, quotas, quota, cachedReset, resetAt, current, resetKey, nowMs)
+  ) {
     return;
   }
 
@@ -371,8 +396,7 @@ function getEnabledConnectionIds(
 ): Record<string, boolean> {
   return (
     ((settings[providerConfig.settingsKey] as JsonRecord | undefined)?.connections as
-      | Record<string, boolean>
-      | undefined) || {}
+      Record<string, boolean> | undefined) || {}
   );
 }
 

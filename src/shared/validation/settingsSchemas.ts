@@ -280,7 +280,7 @@ export const updateSettingsSchema = z.object({
   stickyRoundRobinLimit: z.number().int().min(0).max(1000).optional(),
   /** 9router parity: global combo expansion strategy (fallback vs round-robin). */
   comboStrategy: z.enum(["fallback", "round-robin"]).optional(),
-  comboStickyRoundRobinLimit: z.number().int().min(1).max(100).nullable().optional(),
+  comboStickyRoundRobinLimit: z.number().int().min(1).max(1000).nullable().optional(),
   providerStrategies: z
     .record(
       z.string().trim().min(1),
@@ -464,6 +464,10 @@ export const updateSettingsSchema = z.object({
     .min(VIDEO_BRIDGE_TIMEOUT_MIN_MS)
     .max(VIDEO_BRIDGE_TIMEOUT_MAX_MS)
     .optional(),
+  // Operator half of the FU-06 dual opt-in (#11654) for server-orchestrated
+  // Audio Bridge STT over Video Bridge audio extraction — defaults false
+  // (Hard Rule #20). A request-side opt-in is required in addition to this.
+  modalityBridgeVideoAudioTranscriptionEnabled: z.boolean().optional(),
   modalityBridgeCacheEnabled: z.boolean().optional(),
   modalityBridgeCacheTtlMinutes: z.number().int().min(1).max(1440).optional(),
   modalityBridgeCacheMaxEntries: z.number().int().min(10).max(5000).optional(),
