@@ -42,7 +42,7 @@ permissions:
 jobs:
   prepare:
     name: Resolve Docker release metadata
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       promote_latest: ${{ steps.version.outputs.promote_latest }}
@@ -343,7 +343,7 @@ jobs:
       - prepare
       - build
     if: needs.prepare.outputs.skip != 'true'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
