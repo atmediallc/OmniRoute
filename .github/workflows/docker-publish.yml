@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.version == 'next' && github.ref || inputs.version == 'main' && 'refs/heads/main' || format('refs/tags/v{0}', inputs.version)) || '' }}
           # Need full tag history for semver comparison when deciding :latest.
           fetch-depth: 0
 
@@ -162,7 +162,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.version == 'next' && github.ref || inputs.version == 'main' && 'refs/heads/main' || format('refs/tags/v{0}', inputs.version)) || '' }}
           fetch-depth: 0
 
       - name: Assert Docker Engine
@@ -365,7 +365,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.version == 'next' && github.ref || inputs.version == 'main' && 'refs/heads/main' || format('refs/tags/v{0}', inputs.version)) || '' }}
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -418,16 +418,30 @@ jobs:
           path: /tmp/digests/bun-web
           merge-multiple: true
 
-      - name: Guard against stale digests
+      - name: Validate fresh multi-architecture digests
         run: |
           set -euo pipefail
-          # One digest per arch (amd64 + arm64) at most; more means stale digests leaked in (#15184).
+          # Optional Bun artifacts can be absent; create directories before find.
+          mkdir -p /tmp/digests/{base,web,bun-base,bun-web}
           for dir in base web bun-base bun-web; do
-            count=$(find "/tmp/digests/$dir" -type f 2>/dev/null | wc -l)
-            if [ "$count" -gt 2 ]; then
-              echo "digests in $dir: found $count, expected at most 2 (stale digests leaked in)" >&2
+            count=$(find "/tmp/digests/$dir" -maxdepth 1 -type f | wc -l)
+            if [[ "$dir" == "base" || "$dir" == "web" ]]; then
+              if [ "$count" -ne 2 ]; then
+                echo "::error::Required $dir image needs exactly two architecture digests (amd64 and arm64), got $count"
+                exit 1
+              fi
+            elif [ "$count" -gt 2 ]; then
+              echo "::error::Optional $dir has $count digests, expected at most two"
               exit 1
             fi
+            while IFS= read -r digest_file; do
+              digest=$(basename "$digest_file")
+              if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "::error::Invalid digest filename in $dir: $digest"
+                exit 1
+              fi
+            done < <(find "/tmp/digests/$dir" -maxdepth 1 -type f)
+            echo "$dir: $count digest(s)"
           done
 
       - name: Create Docker Hub version manifests
