@@ -135,8 +135,25 @@ jobs:
           echo "Commit: $(git rev-parse HEAD)"
           echo "Platform: ${{ matrix.platform }}"
           docker info --format 'CPU={{.NCPU}} MEM={{.MemTotal}}'
-          test -f Dockerfile.bun
-          test -f bun.lock
+
+          test -f Dockerfile.bun || {
+            echo "::error::Dockerfile.bun is missing"
+            exit 1
+          }
+          test -f package.json || {
+            echo "::error::package.json is missing"
+            exit 1
+          }
+
+          if [[ -f bun.lock ]]; then
+            echo "Dependency lockfile: bun.lock"
+          elif [[ -f bun.lockb ]]; then
+            echo "Dependency lockfile: bun.lockb"
+          elif [[ -f package-lock.json ]]; then
+            echo "::warning::bun.lock is absent; package-lock.json exists"
+          else
+            echo "::warning::No dependency lockfile found"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
