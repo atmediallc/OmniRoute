@@ -83,6 +83,8 @@ RUN set -eux; \
 # Install into /usr/local once, in the common base. runner-base, runner-web,
 # and runner-cli inherit these binaries, including when running as USER node.
 # Exact versions preserve reproducibility; the build fails if a binary is absent.
+# simple-git in bundled CLI tools is patched to >=4.0.1 to clear CVE-2026-102828
+# and CVE-2026-102829 in container vulnerability scans.
 RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,target=/root/.npm \
   npm install -g --no-audit --no-fund \
     @openai/codex@0.159.2 \
@@ -94,7 +96,17 @@ RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,targe
   && for tool in codex claude droid openclaw qodercli cline; do \
        command -v "$tool" || exit 1; \
      done \
-  && cline --version
+  && cline --version \
+  && npm install --prefix /tmp/cli-cve-patch --no-audit --no-fund --ignore-scripts \
+       simple-git@4.0.1 @simple-git/argv-parser@2.0.1 \
+  && find /usr/local/lib/node_modules -type d -name "simple-git" | while read -r dir; do \
+       rm -rf "$dir" && cp -R /tmp/cli-cve-patch/node_modules/simple-git "$dir"; \
+     done \
+  && find /usr/local/lib/node_modules -type d -name "argv-parser" | while read -r dir; do \
+       rm -rf "$dir" && cp -R /tmp/cli-cve-patch/node_modules/@simple-git/argv-parser "$dir"; \
+     done \
+  && rm -rf /tmp/cli-cve-patch \
+  && npm cache clean --force
 
 # Global npm binaries live here; preserve visibility under both root and node.
 ENV PATH="/usr/local/bin:${PATH}"
