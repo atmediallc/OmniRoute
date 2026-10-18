@@ -13241,6 +13241,7 @@ paths:
       tags:
         - Sync
       summary: "GET sync › tokens"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -13248,6 +13249,7 @@ paths:
       tags:
         - Sync
       summary: "POST sync › tokens"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -13256,6 +13258,7 @@ paths:
       tags:
         - Sync
       summary: "DELETE sync › tokens › <id>"
+      x-always-protected: true
       responses:
         "200":
           description: OK
@@ -14030,6 +14033,31 @@ paths:
       responses:
         "200":
           description: OK
+  /api/v1/media/{id}:
+    get:
+      tags:
+        - V1 Media
+      summary: "GET media › <id>"
+      description: >-
+        Serves media that a video job stored on this gateway because the provider's own result URL
+        is auth-gated (OpenRouter `unsigned_urls`). The id is returned in the `url` of a
+        `/api/v1/videos/generations` response. Readable by the API key that generated it, a
+        manage-scope key or the dashboard session (same ownership rule as `/api/v1/files/{id}/content`);
+        anything else, an unknown id or an expired file (call-log retention window) answers 404.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^([a-f0-9]{16}|none)__[a-f0-9]{32}\\.[a-z0-9]{2,5}$"
+      responses:
+        "200":
+          description: The stored media bytes (e.g. `video/mp4`), served inline.
+        "401":
+          description: Invalid API key.
+        "404":
+          description: Media not found, expired or not owned by the caller.
   /api/v1/issues/report:
     post:
       tags:

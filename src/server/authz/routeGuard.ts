@@ -231,6 +231,13 @@ export const ALWAYS_PROTECTED_API_PATHS: ReadonlyArray<string> = [
   // dashboard sends the session cookie and automation a manage-scoped key, so
   // both keep working; the plain prefix covers the /{id} child routes.
   "/api/relay/tokens",
+  // Sync token management. POST mints a token that opens GET /api/sync/bundle,
+  // which returns decrypted provider credentials and plaintext API keys — the
+  // material /api/settings/export-json above hands out — GET lists the tokens
+  // and the [id] child revokes one. Issuance already needed a dashboard session
+  // or the local CLI when login is on; in open mode it fell back to "anyone".
+  // The bundle itself stays a public route: it authenticates with the token.
+  "/api/sync/tokens",
 ];
 
 /**

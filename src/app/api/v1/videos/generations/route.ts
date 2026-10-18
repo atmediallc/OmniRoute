@@ -1,5 +1,7 @@
 import { handleVideoGeneration } from "@omniroute/open-sse/handlers/videoGeneration.ts";
+import { getRequestedModelEndpointMismatch } from "@/lib/providerModels/modelEndpointGuard";
 import { runWithCallLogApiKeyContext } from "@/lib/usage/callLogApiKeyContext";
+import { createRequestMediaSink } from "@/app/api/v1/_helpers/mediaSink";
 import { resolveVideoCredentialProvider } from "@omniroute/open-sse/handlers/videoGeneration/googleFlow.ts";
 import { withInjectionGuard } from "@/middleware/promptInjectionGuard";
 import {
@@ -75,7 +77,13 @@ async function postHandler(request, context) {
   // the key's connection scope, the same scope chat applies.
   const scope = await resolveKeyConnectionScope(policy.apiKeyInfo);
   if (scope.rejection) return scope.rejection;
+  // Respect API key scope before rejecting incompatible model endpoints.
+  const endpointMismatch = await getRequestedModelEndpointMismatch(body.model, "videos");
+  if (endpointMismatch) return errorResponse(HTTP_STATUS.BAD_REQUEST, endpointMismatch);
   const { allowedConnections } = scope;
+
+  // #16372 — where auth-gated job results (OpenRouter video) are stored and served from.
+  const mediaSink = await createRequestMediaSink(request, policy.apiKeyInfo);
 
   // Bind API-key identity for every call log and usage row this request emits.
   // Without it every video row lands with api_key_id NULL, which mis-buckets per-key
@@ -110,6 +118,7 @@ async function postHandler(request, context) {
           {
             request,
             policy,
+            mediaSink,
             keyScope: {
               allowedConnections,
               isTargetAllowed: createComboTargetKeyGate(policy, body.model),
@@ -193,6 +202,9 @@ async function postHandler(request, context) {
       body,
       credentials,
       log,
+      // #16372 — auth-gated job results are stored under this caller's owner and served
+      // from the caller-facing origin (configured public URL / trusted proxy / Host).
+      mediaSink,
       ...(isCustomModel && { resolvedProvider: provider }),
     })
   );

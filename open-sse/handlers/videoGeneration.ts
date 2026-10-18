@@ -181,11 +181,14 @@ export async function recordVideoJobCall({
 /**
  * Handle video generation request
  */
-
-/**
- * Handle video generation request
- */
-export async function handleVideoGeneration({ body, credentials, log, resolvedProvider = null }) {
+export async function handleVideoGeneration({
+  body,
+  credentials,
+  log,
+  resolvedProvider = null,
+  // #16372 — route-injected media sink (owner + public origin) for auth-gated job results.
+  mediaSink = undefined,
+}) {
   let { provider, model } = parseVideoModel(body.model);
   if (resolvedProvider) {
     provider = resolvedProvider;
@@ -232,6 +235,7 @@ export async function handleVideoGeneration({ body, credentials, log, resolvedPr
         body,
         credentials,
         log,
+        mediaSink,
         provider,
         recordCall: recordVideoJobCall,
         ...resolveVideoJobPollingOverrides(body),
@@ -273,6 +277,7 @@ export async function handleVideoGeneration({ body, credentials, log, resolvedPr
       body,
       credentials,
       log,
+      mediaSink,
       provider,
       recordCall: recordVideoJobCall,
       ...resolveVideoJobPollingOverrides(body),
