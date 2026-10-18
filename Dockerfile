@@ -398,6 +398,7 @@ RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,targe
     @anthropic-ai/claude-code@2.1.260 \
     droid@0.212.0 \
     openclaw@2026.9.1 \
-    @qoder-ai/qodercli@1.1.63
+    @qoder-ai/qodercli@1.1.63 \
+    cline@3.0.73
 
 USER node
