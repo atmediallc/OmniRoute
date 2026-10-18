@@ -155,6 +155,52 @@ jobs:
             echo "::warning::No dependency lockfile found"
           fi
 
+      # Only modify the temporary checkout used for the Bun image build.
+      # The Node.js publish workflow and committed application files stay unchanged.
+      - name: Prepare Bun-only build compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # Next.js 16.3.8 + TypeScript 6: switch from the tsc --showConfig
+          # subprocess to Next's TypeScript compiler API. Type checking remains enabled.
+          config_path = Path("next.config.mjs")
+          config = config_path.read_text()
+          anchor = "  experimental: {"
+          if config.count(anchor) != 1 or "useTypeScriptCli:" in config:
+              raise SystemExit("Unexpected Next configuration; refusing to patch")
+          config = config.replace(
+              anchor,
+              anchor + "\n    // Bun build: use the TypeScript 6 compiler API; do not skip type checking.\n    useTypeScriptCli: false,",
+              1,
+          )
+          config_path.write_text(config)
+
+          # Debian Trixie packages confirmed unavailable in the prior Bun web logs.
+          dockerfile_path = Path("Dockerfile.bun")
+          lines = dockerfile_path.read_text().splitlines(keepends=True)
+          changed = {"gconf-service": 0, "stdc++6": 0, "fonts-kacst": 0}
+          patched = []
+          for line in lines:
+              parts = line.strip().split()
+              package = parts[0] if parts else ""
+              if package in ("gconf-service", "fonts-kacst"):
+                  changed[package] += 1
+                  continue
+              if package == "stdc++6":
+                  changed[package] += 1
+                  line = line.replace("stdc++6", "libstdc++6", 1)
+              patched.append(line)
+          if any(count != 1 for count in changed.values()):
+              raise SystemExit(f"Unexpected Dockerfile package layout: {changed}")
+          dockerfile_path.write_text("".join(patched))
+          print("Bun-only build compatibility applied:", changed)
+          PY
+          git diff --check
+          git diff --stat
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
