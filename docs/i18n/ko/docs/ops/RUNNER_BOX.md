@@ -4,16 +4,34 @@
 
 ---
 
-자체 호스팅 풀(8개 러너 모두의 `self-hosted, omni-release`, 그중 2개의 `omni-build`)은 **.113** 서버에서 실행됩니다.
-2026-08-28 측정(v3.8.50 사후 분석, 제III부):
+자체 호스팅 풀은 **.113** 머신(`tomni-proxmox-113`)에서 실행됩니다. 2026-10-18부터 각
+OmniRoute 러너에는 **하나의 역할**과 하나의 레이블만 할당되며, `MemoryHigh`의 합계가
+물리 RAM에 근접하도록 메모리/CPU 예산이 설정되어 있습니다.
 
-| 리소스    | 값                                                                                                                   | 스케줄링에 미치는 영향                                                                                                                                         |
-| --------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| RAM / CPU | **31 GB / 32코어**(이 문서가 처음 작성되었을 때는 16 GB)                                                             | `next-build` 하나가 최대 **~14 GB**를 사용 → 무거운 빌드 2개를 동시에 실행하면 서버가 포화되고, 3개면 서버가 다운됨(2026-08-28 06:42Z: 부하 56, 작업 2개 유실) |
-| 스왑      | 15 GB                                                                                                                | 스왑을 사용해 v3.8.50 게시를 간신히 완료했으며, 메모리 압박은 `/proc/pressure/memory`에 표시됨                                                                 |
-| `/tmp`    | **12 GB tmpfs = RAM**                                                                                                | 여기에 보관되는 모든 것은 메모리를 사용하며, 남은 파일은 3시간 후 정리됨                                                                                       |
-| 디스크    | 188 GB                                                                                                               | 제한이 없으면 8개 러너의 `_work` 체크아웃이 약 70 GB에 달함                                                                                                    |
-| 러너      | **리스너 6개**: OmniRoute 4개(`omni-build` 1개 + `omni-release` 전용 1개 + `omni-light` 2개) + OmniHeuris + OmniMind | 모두 위의 메모리를 공유함. `omniroute-113-3/-4/-7/-8`은 비활성화되어 있음(`systemctl enable --now`로 하나를 다시 활성화할 수 있음)                             |
+| 러너                 | 레이블          | 역할                                                                                                                  | `MemoryHigh` / `MemoryMax` | `CPUQuota` |
+| -------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------- | ---------- |
+| `omniroute-113-5`    | `omni-build`    | Turbopack 빌드: `ci.yml` `Build`, Docker amd64, `npm-publish`, `nightly-v4-build`, `preview-artifact`, 야간 a11y 빌드 | 40 GB / 44 GB (스왑 0)     | 1600 %     |
+| `omniroute-113-6`    | `omni-release`  | Release-Green(`release-green` + `main-green`), webpack 빌드                                                           | 20 GB / 24 GB (스왑 4 GB)  | 800 %      |
+| `omniroute-113-2`    | `omni-light`    | 야간 작업(Schemathesis, promptfoo, garak, k6, a11y 부팅) 및 `quality.yml` `lint-guard`                                | 12 GB / 16 GB (스왑 4 GB)  | 600 %      |
+| `omniroute-113`      | `omni-light`    | 위와 동일한 풀                                                                                                        | 8 GB / 12 GB               | 400 %      |
+| OmniHeuris, OmniMind | (각 리포지토리) | Dependabot만 실행(각각 최대 155 MB, 2026-10-18)                                                                       | 4 GB / 6 GB                | 각각 200 % |
+
+2026-10-18 측정 결과:
+
+| 리소스    | 값                      | 스케줄링에 미치는 의미                                                                                                                                                                                                                                                                                   |
+| --------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RAM / CPU | **78 GB / 32코어**      | Turbopack 프로덕션 빌드는 cgroup 상한이 적용된 상태에서 최대 33–37 GB를 사용합니다(상한 미적용 시 49 GB, `tests/unit/ci-build-bundler-webpack.test.ts`). webpack 빌드는 약 14–16 GB를 사용합니다. Turbopack 빌드 하나와 webpack 빌드 하나는 동시에 실행할 수 있지만, Turbopack 빌드 두 개는 불가능합니다 |
+| 스왑      | 16 GB                   | `omniroute-113-5`는 스왑이 비활성화된 상태(`MemorySwapMax=0`)로 실행되므로, 통제 불능 상태의 빌드가 머신 전체를 스왑에 빠뜨리는 대신 설정된 상한에서 종료됩니다                                                                                                                                          |
+| `/tmp`    | **12 GB tmpfs = RAM**   | 여기에 저장되는 모든 데이터는 메모리를 사용하며, 남은 파일은 3시간 후 정리됩니다                                                                                                                                                                                                                         |
+| CPU       | 32코어에서 부하 60 관측 | 할당량 적용 전에는 하나의 Turbopack 빌드(약 1166 % CPU)와 커버리지 스위트가 동일한 머신에서 실행되면서 다른 리스너의 하트비트가 중단되었습니다(`The self-hosted runner lost communication`, #16853)                                                                                                      |
+| 러너      | **리스너 6개**          | OmniRoute 4개 + OmniHeuris + OmniMind이며, `omniroute-113-3/-4/-7/-8`은 비활성화되어 있습니다(`systemctl enable --now`로 하나를 다시 활성화할 수 있음)                                                                                                                                                   |
+
+제한은 각 유닛의 `/etc/systemd/system/actions.runner.<…>.service.d/override.conf`에
+설정되어 있으며(이전 값은 `override.conf.bak-20261018`로 보관), 재시작 없이
+`systemctl set-property --runtime … MemoryHigh=… MemoryMax=… CPUQuota=…`로 실시간 적용되었으므로
+실행 중인 작업에는 영향이 없었습니다. 레이블도 러너 API를 통해
+(`gh api -X DELETE repos/<repo>/actions/runners/<id>/labels/<label>` /
+`gh api -X POST repos/<repo>/actions/runners/<id>/labels -f 'labels[]=<label>'`) 실시간으로 변경됩니다.
 
 ## 정리기 설치(서버에서 한 번만 수행)
 
@@ -40,49 +58,37 @@ CPU를 소모합니다. 모든 OmniRoute 유닛에는
 
 ## 운영 규칙
 
-- **고부하 빌드 상한: 한 번에 하나 — 레이블로 강제됨(2026-08-29부터).** 전체
-  `next build`를 실행하는 모든 작업은 `[self-hosted, omni-build]`를 대상으로 하며,
-  해당 레이블은 **`omniroute-113-5`**에만 있습니다(재등록 없이 러너 API를 통해
-  추가됨): `ci.yml`의 `Build`, `npm-publish.yml`의 `publish`, 두
-  `nightly-release-green` 검증, 그리고 `docker-publish.yml`의 **amd64**(이 트리에서 호스팅된
-  7 GB 러너에 ResourceExhausted 발생 — #11976). arm64 Docker 단계는 ARM 장비가 없으므로
-  webpack을 사용해 `ubuntu-24.04-arm`에 그대로 둡니다. Docker amd64도 webpack을 사용합니다.
-  이 트리에서 Turbopack은 31 GB가 있어도 BuildKit 내부에서 패닉을 일으켰습니다(`TurbopackInternalError:
-there must be a path to a root`, 실행 33253576569). 반면 동일한
-  트리의 arm64 webpack 빌드는 호스팅된 ARM에서 성공했습니다. `docker-publish` amd64는
-  `ci.yml`의 `Build`와 `heavy-build-main` 동시성 그룹을 공유하므로
-  (`cancel-in-progress: false`) 단일 슬롯을 기다리며 대기열에 들어갑니다. Docker Engine은
-  `omniroute-113-5`에 있어야 합니다(`docker info`가 게시
-  작업의 첫 단계입니다). 이전 상한은 두 개였지만 31 GB 환경에서는 잘못된 값이었습니다.
-  2026-08-29 17:26 UTC에 두 개의 `next-build`가 동시에 실행되면서(15.4 GB + 17.2 GB RSS) 장비의
-  여유 메모리가 5 GB까지 줄고 스왑 4 GB가 사용되었으며, 커널 OOM이 그중 하나를 종료했습니다. systemd는
-  해당 종료를 _다른_ 러너의 유닛에 기록했고, `runsvc.sh`가 그 리스너를 SIGKILL로 종료했으며,
-  그 러너에서 실행 중이던 작업은 "The runner has received a shutdown signal" 메시지와 함께
-  실패했습니다(호스팅된 러너에서 OOM이 발생했을 때와 동일한 문구). `omniroute-113-6`에는
-  `omni-release`만 유지합니다. 이제 `main` 병합, PR 및 야간 작업의 고부하 빌드는 단일 슬롯에서
-  순차 실행됩니다. 대기열은 그에 따른 대가입니다.
-  Proxmox VM의 RAM이 증설되는 날(48–64 GB) 두 번째 슬롯을 복원합니다:
-  `gh api -X POST repos/<repo>/actions/runners/<id of omniroute-113-6>/labels -f 'labels[]=omni-build'`.
-- **경량 풀: `omni-light`(2026-08-29, #11965).** `omniroute-113`과 `omniroute-113-2`에는
-  전체 빌드는 아니지만 백엔드 전용 `next build`(~5–6 GB)가 필요한 작업을 위한
-  `omni-light`가 있습니다. 대상은 야간 Schemathesis, promptfoo, garak 및 axe-a11y 작업입니다.
-  이 작업들은 호스팅된 7 GB 러너에서 실행되다가 아무도 지켜보지 않는 상황에서
-  `release/v3.8.51`에서 실패했습니다. 해당 장비의 최악 조건은 고부하 2개 + 경량 2개 ≈
-  30 + 12 GB입니다. 이는 RAM 31 GB를 초과하지만 스왑 16 GB 내에는 들어갑니다. 여유 공간을
-  확보하는 근본적인 해결책은 Proxmox VM(`tomni-proxmox-113`)에 RAM을 추가하는 것이며,
-  그러면 레이블 상한을 고부하 3개 + 경량 2개로 늘릴 수 있습니다.
-- **의도적으로 리스너 수를 줄였습니다.** 2026-08-29에 OmniRoute 유닛 4개를 비활성화했습니다.
-  해당 장비를 사용하는 것이 `ci.yml`의 `Build`와 야간 작업뿐인 상황에서 리스너 8개가
-  유휴 상태였으며, 추가 리스너 각각은 잠재적으로 14 GB를 사용하는 테넌트가 될 수 있습니다.
-  정리 작업의 상한은 6입니다(cron의 `MAX_ACTIVE_RUNNERS=6`). 이 값은
-  장비에 있는 모든 `Runner.Listener`를 계산하며, OmniHeuris + OmniMind가 기존 4개에 2개를 추가합니다.
-- **러너가 하나라도 작업 중일 때는 `/tmp` 또는 `_work`를 수동으로 정리하지 마십시오.**
-  확인 후 삭제 사이에 간격이 생기는 방식 때문에 2026-08-27에 실행 중인 Build 작업의
-  `_work`가 삭제되었습니다. 정리 작업은 확인과 제거를 한 단계에서 수행하므로,
-  해당 작업에 맡기십시오.
-- 작업 도중 러너를 중지하면 작업이 취소됩니다(실제 환경에서 확인됨). `systemctl stop`은
-  리스너에 `Runner.Worker` 자식 프로세스가 없을 때만 실행하고, 이 작업을 하나의 명령으로 수행하십시오.
-- 워크플로는 아티팩트를 `/tmp`에 저장해 두어서는 안 됩니다(`/tmp`는 RAM입니다).
-  `$RUNNER_TEMP`(러너별 디스크 공간)에 다운로드하십시오. 1.3 GB `next-build` 아티팩트를
-  tmpfs에 저장하는 데 27–32분이 걸렸지만, 디스크에서는 업로드하는 데 2분이 걸렸습니다.
-- `.15` VPS는 homologation 전용이며, CI 러너를 절대 실행하지 않습니다.
+- **한 번에 하나의 Turbopack 빌드만 실행 — 레이블로 강제됩니다.** 전체 Turbopack
+  `next build`를 실행하는 모든 작업은 `[self-hosted, omni-build]`를 대상으로 하며, 해당
+  레이블은 **`omniroute-113-5`**에만 지정되어 있습니다: `ci.yml`의 `Build`, `npm-publish.yml`의 `publish`, `nightly-v4-build`, `preview-artifact`,
+  야간 a11y 빌드(#16853), 그리고 `docker-publish.yml`의 **amd64**(BuildKit 내부에서는 webpack 사용 —
+  해당 환경에서 Turbopack이 패닉을 일으킴, 실행 33253576569). arm64 Docker 작업은 계속 `ubuntu-24.04-arm`에서 실행됩니다.
+  `docker-publish` amd64는 `ci.yml`의 `Build`와 `heavy-build-main` 동시 실행 그룹을 공유합니다
+  (`cancel-in-progress: false`). Docker Engine은 반드시 `omniroute-113-5`에 있어야 합니다. 두 번째 Turbopack
+  슬롯은 78 GB에 맞지 않습니다(33–37 GB × 2에 시스템의 나머지 사용량까지 포함). 두 번째 슬롯은
+  webpack 빌드에만 안전합니다.
+- **Release-Green에는 자체 슬롯이 있습니다(2026-10-18).** 그전까지 두 Release-Green 검증은 모두
+  `omni-build`에서 실행되었습니다. 모든 push마다(~시간당 10회, 하루 동안 push 실행 100개 중 97개가
+  작업 도중 취소됨) 실행되었고, 하루에 세 번 약 2시간짜리 전체 검사를 수행했습니다(05:29 검사는 슬롯을
+  6시간 기다림). 단일 빌드 슬롯의 용량이 여러 배로 초과되었고, 동일 저장소에서 생성된 PR의 Build는
+  몇 시간씩 대기했습니다. 이제 `release-green`과 `main-green`은 `OMNIROUTE_USE_TURBOPACK=0`을 사용하여
+  `omni-release`(`omniroute-113-6`만 해당)를 대상으로 하며, 시작된 실행은 더 이상 새로운 push로 인해
+  취소되지 않습니다(대기 슬롯은 여전히 폭주하는 요청을 하나로 통합함). `tests/unit/build/runner-capacity-routing.test.ts`는
+  라우팅과 webpack 전환을 고정하고, `omni-release`의 어떤 작업도 Turbopack으로 빌드하지 않도록 보장합니다.
+- **경량 풀: `omni-light`.** `omniroute-113`과 `omniroute-113-2`는 백엔드 전용 `next build`
+  (~5–6 GB, webpack)가 필요한 야간 작업과 `quality.yml`의 `lint-guard`를 실행합니다. `omniroute-113`에는
+  2026-10-18까지 `MemoryHigh=4G`가 설정되어 있었습니다. 그곳에서 promptfoo 빌드는 메모리 회수를 반복하며
+  54분 동안 실행되었고, 8 GB로 늘리면 스로틀링이 제거됩니다.
+- **리스너 수를 의도적으로 줄였습니다.** 2026-08-29에 OmniRoute 유닛 4개를 비활성화했습니다. 추가되는
+  각 리스너는 위 메모리 예산을 나눠 쓰는 또 하나의 테넌트입니다. janitor의 상한은 6입니다(cron의 `MAX_ACTIVE_RUNNERS=6`). 이는
+  시스템에 있는 모든 `Runner.Listener`를 계산하며, OmniHeuris와 OmniMind가 네 개의 OmniRoute 리스너에 두 개를 더합니다.
+- **어떤 러너든 사용 중일 때는 절대로 `/tmp`나 `_work`를 수동으로 정리하지 마십시오.** 확인과
+  삭제 사이에 간격이 있는 확인 후 삭제 방식 때문에 2026-08-27에 실행 중이던 Build 작업의
+  `_work`가 삭제되었습니다. janitor는 확인과 삭제를 한 단계에서 수행하므로
+  그대로 맡기십시오.
+- 작업 도중 러너를 중지하면 해당 작업이 취소됩니다(실제 환경에서 확인됨). `systemctl stop`은
+  해당 리스너에 `Runner.Worker` 자식 프로세스가 없을 때만 실행해야 하며, 확인과 중지를 하나의 명령으로 수행하십시오.
+- 워크플로는 아티팩트를 `/tmp`에 두면 안 됩니다(여기는 RAM입니다). `$RUNNER_TEMP`로
+  다운로드하십시오(러너별 디스크 공간). 1.3 GB 크기의 `next-build` 아티팩트를 tmpfs에 저장하는 데 27–32분이
+  걸렸지만, 디스크에서는 업로드하는 데 2분이 걸렸습니다.
+- `.15` VPS는 사전 검증 전용이며, CI 러너를 절대로 실행하지 않습니다.

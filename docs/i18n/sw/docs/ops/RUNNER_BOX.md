@@ -4,16 +4,34 @@
 
 ---
 
-Bwawa linalosimamiwa binafsi (`self-hosted, omni-release` kwenye runner zote nane; `omni-build` kwenye mbili) linaendeshwa kwenye mashine ya **.113**.
-Vipimo vya 2026-08-28 (uchanganuzi wa baada ya tukio wa v3.8.50, Sehemu ya III):
+Pooli inayohostiwa binafsi inaendeshwa kwenye mashine ya **.113** (`tomni-proxmox-113`). Tangu 2026-10-18, kila
+runner ya OmniRoute ina **jukumu moja**, lebo moja, na bajeti ya kumbukumbu/CPU inayoweka jumla ya
+`MemoryHigh` karibu na RAM halisi:
 
-| rasilimali | thamani                                                                                                             | maana yake kwa upangaji wa kazi                                                                                                                                                          |
-| ---------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| RAM / CPU  | **GB 31 / core 32** (ilikuwa GB 16 hati hii ilipoandikwa kwa mara ya kwanza)                                        | `next-build` moja hufikia kilele cha **~GB 14** → build 2 nzito zinazoendeshwa kwa wakati mmoja hujaza uwezo wa mashine, 3 huiangusha (2026-08-28 06:42Z: mzigo 56, job mbili zilipotea) |
-| swap       | GB 15                                                                                                               | ilitumia swap kukamilisha uchapishaji wa v3.8.50; shinikizo linaonekana kwenye `/proc/pressure/memory`                                                                                   |
-| `/tmp`     | **GB 12 tmpfs = RAM**                                                                                               | chochote kinachowekwa hapo hutumia kumbukumbu; mabaki huondolewa baada ya saa 3                                                                                                          |
-| diski      | GB 188                                                                                                              | checkout za `_work` za runner 8 hufikia ~GB 70 bila kikomo                                                                                                                               |
-| runner     | **visikilizi 6**: 4 OmniRoute (1 `omni-build` + 1 ya `omni-release` pekee + 2 `omni-light`) + OmniHeuris + OmniMind | zote zinatumia kumbukumbu iliyo hapo juu kwa pamoja; `omniroute-113-3/-4/-7/-8` zimezimwa (`systemctl enable --now` huwasha moja tena)                                                   |
+| runner               | lebo           | jukumu                                                                                                                                     | `MemoryHigh` / `MemoryMax` | `CPUQuota`      |
+| -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- | --------------- |
+| `omniroute-113-5`    | `omni-build`   | Uundaji wa Turbopack: `ci.yml` `Build`, Docker amd64, `npm-publish`, `nightly-v4-build`, `preview-artifact`, uundaji wa kila usiku wa a11y | 40 GB / 44 GB (swap 0)     | 1600 %          |
+| `omniroute-113-6`    | `omni-release` | Release-Green (`release-green` + `main-green`), uundaji wa webpack                                                                         | 20 GB / 24 GB (swap 4 GB)  | 800 %           |
+| `omniroute-113-2`    | `omni-light`   | kazi za kila usiku (Schemathesis, promptfoo, garak, k6, uanzishaji wa a11y) na `quality.yml` `lint-guard`                                  | 12 GB / 16 GB (swap 4 GB)  | 600 %           |
+| `omniroute-113`      | `omni-light`   | pooli ileile kama ilivyo hapo juu                                                                                                          | 8 GB / 12 GB               | 400 %           |
+| OmniHeuris, OmniMind | (repo zao)     | Dependabot pekee (kilele cha 155 MB kila moja, 2026-10-18)                                                                                 | 4 GB / 6 GB                | 200 % kila moja |
+
+Vipimo vya 2026-10-18:
+
+| rasilimali | thamani                                | maana yake kwa upangaji wa ratiba                                                                                                                                                                                                                                                                                   |
+| ---------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RAM / CPU  | **78 GB / cores 32**                   | uundaji wa uzalishaji wa Turbopack hufikia kilele cha 33–37 GB chini ya kikomo cha cgroup (49 GB bila kikomo, `tests/unit/ci-build-bundler-webpack.test.ts`); uundaji wa webpack huwa karibu GB 14–16. Uundaji mmoja wa Turbopack + mmoja wa webpack vinaweza kuendeshwa pamoja; miundo miwili ya Turbopack haiwezi |
+| swap       | 16 GB                                  | `omniroute-113-5` inaendeshwa swap ikiwa imezimwa (`MemorySwapMax=0`) ili uundaji unaotumia rasilimali kupita kiasi ukatishwe kwenye kikomo chake badala ya kusababisha mashine kutumia swap                                                                                                                        |
+| `/tmp`     | **12 GB tmpfs = RAM**                  | chochote kinachowekwa hapo hutumia kumbukumbu; mabaki husafishwa baada ya saa 3                                                                                                                                                                                                                                     |
+| CPU        | mzigo wa 60 kwenye cores 32 ulionekana | kabla ya quota, uundaji mmoja wa Turbopack (~1166 % CPU) pamoja na mkusanyiko wa majaribio ya ufunikaji kwenye mashine hiyo hiyo ulifanya mapigo ya uhai ya visikilizi vingine yakose rasilimali (`The self-hosted runner lost communication`, #16853)                                                              |
+| runners    | **visikilizi 6**                       | OmniRoute 4 + OmniHeuris + OmniMind; `omniroute-113-3/-4/-7/-8` zimezimwa (`systemctl enable --now` huwasha mojawapo tena)                                                                                                                                                                                          |
+
+Vikomo viko katika `/etc/systemd/system/actions.runner.<…>.service.d/override.conf` ya kila unit
+(thamani za awali zimehifadhiwa kama `override.conf.bak-20261018`) na vilitumika moja kwa moja kwa
+`systemctl set-property --runtime … MemoryHigh=… MemoryMax=… CPUQuota=…` — bila kuwasha upya, kwa hivyo hakuna
+job iliyokuwa ikiendeshwa iliyoathiriwa. Lebo hubadilishwa kupitia API ya runners
+(`gh api -X DELETE repos/<repo>/actions/runners/<id>/labels/<label>` /
+`gh api -X POST repos/<repo>/actions/runners/<id>/labels -f 'labels[]=<label>'`), pia moja kwa moja.
 
 ## Sakinisha janitor (mara moja, kwenye mashine)
 
@@ -40,45 +58,42 @@ wakati mmoja, ikiwa tu haina shughuli**, huku ukaguzi wa kutokuwa na shughuli na
 
 ## Kanuni za uendeshaji
 
-- **Kikomo cha build nzito: MOJA kwa wakati mmoja — kinatekelezwa kwa label (tangu 2026-08-29).** Kila job
-  inayoendesha `next build` kamili hulenga `[self-hosted, omni-build]`, na ni
-  **`omniroute-113-5`** pekee iliyo na label hiyo (iliongezwa kupitia runners API — bila
-  usajili upya): `ci.yml` `Build`, `npm-publish.yml` `publish`, uthibitishaji wote wa
-  `nightly-release-green`, na `docker-publish.yml` **amd64** (runner inayohostiwa yenye
-  GB 7 ilipata ResourceExhausted kwenye tree hii — #11976). Sehemu ya arm64 ya Docker inaendelea kutumia
-  `ubuntu-24.04-arm` (hakuna mashine ya ARM) pamoja na webpack. Docker amd64 pia hutumia webpack:
-  Turbopack kwenye tree hii ilianguka ndani ya BuildKit (`TurbopackInternalError:
-there must be a path to a root`, run 33253576569) hata ikiwa na GB 31; build ya
-  arm64 ya tree hiyo hiyo iliyotumia webpack kwenye ARM inayohostiwa ilifaulu. `docker-publish` amd64
-  hushiriki concurrency group ya `heavy-build-main` na `ci.yml` `Build`
-  (`cancel-in-progress: false`), kwa hivyo husubiri kwenye foleni ya nafasi hiyo moja. Docker Engine
-  lazima iwe kwenye `omniroute-113-5` (`docker info` ni hatua ya kwanza ya job ya publish).
-  Hapo awali kikomo kilikuwa viwili, lakini hicho hakikufaa kwa GB 31: mnamo
-  2026-08-29 17:26 UTC, `next-build` mbili zilizoendeshwa kwa wakati mmoja (RSS ya GB 15.4 + GB 17.2) ziliifanya mashine
-  ibaki na GB 5 pekee zisizotumika huku GB 4 za swap zikitumika, na kernel ikaua mojawapo kwa OOM — systemd
-  ilihusisha mauaji hayo na kitengo cha runner _nyingine_, `runsvc.sh` ikaua listener hiyo kwa SIGKILL, na
-  job iliyokuwa ndani yake ikafa ikiwa na ujumbe "The runner has received a shutdown signal" (maandishi yaleyale kama
-  OOM ya runner inayohostiwa). `omniroute-113-6` huhifadhi `omni-release` pekee. Build nzito kutoka kwa
-  merge za `main`, PR na nightly sasa huendeshwa moja baada ya nyingine kwenye nafasi moja; foleni ndiyo gharama yake.
-  Nafasi ya pili itarejeshwa siku ambayo VM ya Proxmox itapata RAM zaidi (GB 48–64):
-  `gh api -X POST repos/<repo>/actions/runners/<id of omniroute-113-6>/labels -f 'labels[]=omni-build'`.
-- **Kundi jepesi: `omni-light` (2026-08-29, #11965).** `omniroute-113` na `omniroute-113-2` zina
-  `omni-light` kwa job zinazohitaji `next build` ya backend pekee (~GB 5–6), lakini si build kamili:
-  job za nightly za Schemathesis, promptfoo, garak na axe-a11y. Ziliendeshwa kwenye runner inayohostiwa yenye GB 7 na
-  zikafa kwenye `release/v3.8.51` bila mtu yeyote kufuatilia. Hali mbaya zaidi kwenye mashine ni 2 nzito + 2 nyepesi ≈
-  GB 30 + 12 — zaidi ya GB 31 za RAM, lakini ndani ya GB 16 za swap; suluhisho halisi la kuongeza nafasi ni RAM zaidi
-  kwenye VM ya Proxmox (`tomni-proxmox-113`), ambayo hubadilisha vikomo vya label kuwa 3 nzito + 2 nyepesi.
-- **Listener chache kimakusudi.** Vitengo vinne vya OmniRoute vilizimwa mnamo 2026-08-29 — kwa kuwa ni
-  `ci.yml` `Build` na nightly pekee zinazotumia mashine hiyo, listener 8 hazikuwa na shughuli, na kila listener ya
-  ziada inaweza kutumia GB 14. Kikomo cha janitor ni 6 (`MAX_ACTIVE_RUNNERS=6` katika cron): huhesabu
-  kila `Runner.Listener` kwenye mashine hiyo, huku OmniHeuris + OmniMind zikiongeza mbili kwa nne zetu.
-- **Kamwe usisafishe `/tmp` au `_work` kwa mkono wakati runner yoyote ina shughuli.**
-  Ukaguzi unaofuatwa na ufutaji wenye pengo kati ya hatua hizo mbili ndio uliosababisha job hai ya Build kupoteza
-  `_work` yake mnamo 2026-08-27. Janitor hufanya ukaguzi na uondoaji katika hatua moja;
-  iache ifanye hivyo.
-- Kusimamisha runner katikati ya job hughairi job hiyo (ilithibitishwa moja kwa moja): tumia `systemctl stop` tu
-  wakati listener yake haina child ya `Runner.Worker` — na ufanye hivyo katika command moja.
-- Workflow hazipaswi kuhifadhi artefact katika `/tmp` (iko kwenye RAM). Pakua kwenda
-  `$RUNNER_TEMP` (iko kwenye diski, kwa kila runner) — artefact ya `next-build` yenye GB 1.3 ilichukua dakika 27–32
-  kuwekwa kwenye tmpfs na dakika 2 kupakiwa kutoka kwenye diski.
-- VPS ya `.15` ni ya homologation pekee — haiendeshi kamwe runner za CI.
+- **Build moja ya Turbopack kwa wakati mmoja — inatekelezwa kwa lebo.** Kila job inayoendesha
+  `next build` kamili ya Turbopack inalenga `[self-hosted, omni-build]`, na ni
+  **`omniroute-113-5`** pekee iliyo na lebo hiyo: `ci.yml` `Build`, `npm-publish.yml` `publish`,
+  `nightly-v4-build`, `preview-artifact`, build ya usiku ya a11y (#16853) na
+  `docker-publish.yml` **amd64** (webpack ndani ya BuildKit — Turbopack ilipata hitilafu hapo,
+  run 33253576569). Sehemu ya Docker ya arm64 inabaki kwenye `ubuntu-24.04-arm`.
+  amd64 ya `docker-publish` hutumia concurrency group ya `heavy-build-main` pamoja na
+  `ci.yml` `Build` (`cancel-in-progress: false`). Docker Engine lazima iwe kwenye
+  `omniroute-113-5`. Slot ya pili ya Turbopack haitoshei GB 78 (2 × GB 33–37 pamoja na
+  matumizi mengine ya mashine); slot ya pili ni salama tu kwa build za webpack.
+- **Release-Green ina slot yake yenyewe (2026-10-18).** Kabla ya hapo uthibitishaji wote wa
+  Release-Green uliendeshwa kwenye `omni-build`: kwa kila push (~10/saa, run 97 kati ya 100 za
+  push zilighairiwa zikiwa katikati ya kazi ndani ya siku moja) na ukaguzi kamili mara tatu kwa
+  siku wa ~saa 2 (ukaguzi wa 05:29 ulisubiri saa 6 kupata slot) — slot hiyo moja ya build
+  ilikuwa na mzigo uliozidi uwezo wake mara kadhaa na Build za PR za chanzo chetu zilisubiri
+  kwa saa nyingi. `release-green` na `main-green` sasa zinalenga `omni-release`
+  (`omniroute-113-6` pekee) zikiwa na `OMNIROUTE_USE_TURBOPACK=0`, na run iliyoanza
+  haighairiwi tena na push mpya zaidi (slot inayosubiri bado huunganisha msururu huo).
+  `tests/unit/build/runner-capacity-routing.test.ts` hudhibiti uelekezaji, swichi ya webpack
+  na huhakikisha kwamba hakuna chochote kwenye `omni-release` kinachofanya build kwa Turbopack.
+- **Pool nyepesi: `omni-light`.** `omniroute-113` na `omniroute-113-2` huendesha job za usiku
+  zinazohitaji `next build` ya backend pekee (~GB 5–6; webpack) na `quality.yml` `lint-guard`.
+  `omniroute-113` ilikuwa na `MemoryHigh=4G` hadi 2026-10-18 — build ya promptfoo ilijaribu
+  kurejesha kumbukumbu kwa dakika 54 huko; GB 8 huondoa ubanaji huo.
+- **Wasikilizaji wachache kimakusudi.** Units nne za OmniRoute zilizimwa tarehe 2026-08-29 —
+  kila listener wa ziada ni tenant mwingine wa bajeti ya kumbukumbu iliyo hapo juu. Kikomo cha
+  janitor ni 6 (`MAX_ACTIVE_RUNNERS=6` katika cron): huhesabu kila `Runner.Listener` kwenye
+  mashine, na OmniHeuris + OmniMind huongeza wawili kwa wanne wetu.
+- **Usiwahi kusafisha `/tmp` au `_work` mwenyewe wakati runner yeyote ana shughuli.**
+  Kukagua kisha kufuta kukiwa na pengo kati ya hatua hizo mbili ndiko kulikosababisha job hai
+  ya Build kupoteza `_work` yake tarehe 2026-08-27. Janitor hufanya ukaguzi na uondoaji katika
+  hatua moja; iachie ifanye hivyo.
+- Kusimamisha runner katikati ya job hughairi job hiyo (ilionekana moja kwa moja):
+  `systemctl stop` tu wakati listener wake hana child ya `Runner.Worker` — na ufanye hivyo
+  kwa command moja.
+- Workflows hazipaswi kuhifadhi artefakti kwenye `/tmp` (ni RAM). Pakua kwenda
+  `$RUNNER_TEMP` (kwenye diski, kwa kila runner) — artefakti ya `next-build` ya GB 1.3
+  ilichukua dakika 27–32 kuwasili kwenye tmpfs na dakika 2 kupakiwa kutoka kwenye diski.
+- VPS ya `.15` ni ya homologation pekee — haiendeshi kamwe runners za CI.

@@ -52,7 +52,10 @@ jobs:
         env:
           # Hosted artifact builds run with less memory than the opt-in 64 GB
           # CI build slot. Keep Webpack here without overriding the latter's
-          # separately measured Turbopack policy (#16169).
+          # separately measured Turbopack policy (#16169). Validated 2026-10-18 on the
+          # hosted runner (run 39151150605): webpack compiled in 7.1 min, job 17 min.
+          # This is the floor docker-publish.yml must not go below
+          # (tests/unit/docker-publish-build-heap-14325.test.ts).
           NODE_OPTIONS: "--max-old-space-size=10240"
           OMNIROUTE_BUILD_MEMORY_MB: "10240"
           OMNIROUTE_USE_TURBOPACK: "0"

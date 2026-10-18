@@ -4,16 +4,34 @@
 
 ---
 
-Nhóm máy chạy tự lưu trữ (`self-hosted, omni-release` trên cả tám runner; `omni-build` trên hai runner) chạy trên máy **.113**.
-Đo ngày 2026-08-28 (báo cáo hậu kiểm v3.8.50, Phần III):
+Nhóm máy tự lưu trữ chạy trên máy chủ **.113** (`tomni-proxmox-113`). Kể từ 2026-10-18, mỗi
+runner OmniRoute có **một vai trò**, một nhãn và hạn mức bộ nhớ/CPU giúp giữ tổng
+`MemoryHigh` gần với dung lượng RAM vật lý:
 
-| tài nguyên | giá trị                                                                                                               | ý nghĩa đối với việc lập lịch                                                                                                                                      |
-| ---------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| RAM / CPU  | **31 GB / 32 lõi** (là 16 GB khi tài liệu này được viết lần đầu)                                                      | một `next-build` đạt đỉnh **~14 GB** → 2 bản dựng nặng chạy đồng thời làm máy quá tải, 3 bản sẽ khiến máy ngừng hoạt động (2026-08-28 06:42Z: tải 56, mất hai job) |
-| swap       | 15 GB                                                                                                                 | máy đã dùng swap để hoàn tất việc phát hành v3.8.50; áp lực được thể hiện trong `/proc/pressure/memory`                                                            |
-| `/tmp`     | **12 GB tmpfs = RAM**                                                                                                 | mọi thứ được lưu tạm ở đó đều chiếm bộ nhớ; phần còn sót lại sẽ bị dọn sau 3 giờ                                                                                   |
-| đĩa        | 188 GB                                                                                                                | các checkout `_work` của 8 runner đạt ~70 GB mà không có giới hạn                                                                                                  |
-| runner     | **6 listener**: 4 OmniRoute (1 `omni-build` + 1 chỉ dành cho `omni-release` + 2 `omni-light`) + OmniHeuris + OmniMind | tất cả cùng chia sẻ lượng bộ nhớ nêu trên; `omniroute-113-3/-4/-7/-8` đang bị vô hiệu hóa (`systemctl enable --now` sẽ khôi phục một runner)                       |
+| runner               | nhãn           | vai trò                                                                                                                               | `MemoryHigh` / `MemoryMax` | `CPUQuota`       |
+| -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ---------------- |
+| `omniroute-113-5`    | `omni-build`   | Các bản dựng Turbopack: `ci.yml` `Build`, Docker amd64, `npm-publish`, `nightly-v4-build`, `preview-artifact`, bản dựng a11y hằng đêm | 40 GB / 44 GB (swap 0)     | 1600 %           |
+| `omniroute-113-6`    | `omni-release` | Release-Green (`release-green` + `main-green`), bản dựng webpack                                                                      | 20 GB / 24 GB (swap 4 GB)  | 800 %            |
+| `omniroute-113-2`    | `omni-light`   | các tác vụ hằng đêm (Schemathesis, promptfoo, garak, k6, khởi động a11y) và `quality.yml` `lint-guard`                                | 12 GB / 16 GB (swap 4 GB)  | 600 %            |
+| `omniroute-113`      | `omni-light`   | cùng nhóm như trên                                                                                                                    | 8 GB / 12 GB               | 400 %            |
+| OmniHeuris, OmniMind | (repo của họ)  | Chỉ Dependabot (mỗi runner đạt đỉnh 155 MB, 2026-10-18)                                                                               | 4 GB / 6 GB                | 200 % mỗi runner |
+
+Đo vào 2026-10-18:
+
+| tài nguyên | giá trị                        | ý nghĩa đối với việc lập lịch                                                                                                                                                                                                                                                                                   |
+| ---------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RAM / CPU  | **78 GB / 32 lõi**             | một bản dựng production bằng Turbopack đạt đỉnh 33–37 GB khi bị giới hạn bởi cgroup (49 GB khi không giới hạn, `tests/unit/ci-build-bundler-webpack.test.ts`); một bản dựng webpack dùng khoảng 14–16 GB. Một bản dựng Turbopack + một bản dựng webpack có thể chạy cùng nhau; hai bản dựng Turbopack thì không |
+| swap       | 16 GB                          | `omniroute-113-5` chạy với swap bị tắt (`MemorySwapMax=0`), nên một bản dựng mất kiểm soát sẽ bị dừng tại giới hạn thay vì khiến máy chủ phải dùng swap                                                                                                                                                         |
+| `/tmp`     | **12 GB tmpfs = RAM**          | mọi thứ được lưu ở đó đều chiếm bộ nhớ; dữ liệu còn sót lại được dọn sau 3 giờ                                                                                                                                                                                                                                  |
+| CPU        | đã ghi nhận tải 60 trên 32 lõi | trước khi áp dụng hạn mức, một bản dựng Turbopack (~1166 % CPU) cùng với một bộ kiểm thử coverage trên cùng máy chủ đã làm nghẽn heartbeat của các listener khác (`The self-hosted runner lost communication`, #16853)                                                                                          |
+| runner     | **6 listener**                 | 4 OmniRoute + OmniHeuris + OmniMind; `omniroute-113-3/-4/-7/-8` bị vô hiệu hóa (`systemctl enable --now` sẽ khôi phục một runner)                                                                                                                                                                               |
+
+Các giới hạn nằm trong `/etc/systemd/system/actions.runner.<…>.service.d/override.conf` của từng unit
+(các giá trị trước đó được giữ lại dưới tên `override.conf.bak-20261018`) và đã được áp dụng trực tiếp bằng
+`systemctl set-property --runtime … MemoryHigh=… MemoryMax=… CPUQuota=…` — không cần khởi động lại, vì vậy không có
+job đang chạy nào bị ảnh hưởng. Các nhãn được thay đổi thông qua runners API
+(`gh api -X DELETE repos/<repo>/actions/runners/<id>/labels/<label>` /
+`gh api -X POST repos/<repo>/actions/runners/<id>/labels -f 'labels[]=<label>'`), cũng được thực hiện trực tiếp.
 
 ## Cài đặt trình dọn dẹp (một lần, trên máy)
 
@@ -48,45 +66,41 @@ và chỉ khi đang rảnh**, với bước kiểm tra trạng thái rảnh và 
 
 ## Quy tắc vận hành
 
-- **Giới hạn build nặng: MỖI LẦN MỘT JOB — được thực thi bằng label (kể từ 2026-08-29).** Mọi job
-  chạy toàn bộ `next build` đều nhắm đến `[self-hosted, omni-build]`, và chỉ
-  **`omniroute-113-5`** mang label đó (được thêm thông qua API của runner — không
-  đăng ký lại): `ci.yml` `Build`, `npm-publish.yml` `publish`, cả hai bước xác thực
-  `nightly-release-green`, và **amd64** của `docker-publish.yml` (runner hosted
-  7 GB gặp ResourceExhausted trên cây này — #11976). Nhánh Docker arm64 vẫn chạy trên
-  `ubuntu-24.04-arm` (không có máy ARM) với webpack. Docker amd64 cũng sử dụng webpack:
-  Turbopack trên cây này đã panic bên trong BuildKit (`TurbopackInternalError:
-there must be a path to a root`, lần chạy 33253576569) ngay cả với 31 GB; bản build
-  webpack arm64 của cùng cây đó trên ARM hosted đã thành công. amd64 của `docker-publish`
-  dùng chung nhóm concurrency `heavy-build-main` với `ci.yml` `Build`
-  (`cancel-in-progress: false`), vì vậy nó sẽ xếp hàng chờ một slot duy nhất. Docker Engine
-  phải có trên `omniroute-113-5` (`docker info` là bước đầu tiên của job publish).
-  Hai từng là giới hạn trước đây và mức đó không phù hợp với 31 GB: vào
-  2026-08-29 17:26 UTC, hai tiến trình `next-build` chạy đồng thời (15.4 GB + 17.2 GB RSS) khiến máy
-  chỉ còn trống 5 GB, sử dụng 4 GB swap và kernel đã OOM-kill một trong số đó — systemd
-  ghi nhận lần kill này trên unit của runner _còn lại_, `runsvc.sh` gửi SIGKILL đến listener đó, và
-  job trên đó chết với thông báo "The runner has received a shutdown signal" (cùng nội dung với lỗi
-  OOM của runner hosted). `omniroute-113-6` chỉ giữ `omni-release`. Các build nặng từ
-  những lần merge vào `main`, PR và tác vụ hằng đêm hiện được tuần tự hóa trên một slot; phải chấp nhận
-  việc xếp hàng. Slot thứ hai sẽ trở lại khi VM Proxmox được cấp thêm RAM (48–64 GB):
-  `gh api -X POST repos/<repo>/actions/runners/<id of omniroute-113-6>/labels -f 'labels[]=omni-build'`.
-- **Nhóm nhẹ: `omni-light` (2026-08-29, #11965).** `omniroute-113` và `omniroute-113-2` mang
-  `omni-light` dành cho các job cần `next build` chỉ cho backend (~5–6 GB), nhưng không cần build đầy đủ:
-  các job Schemathesis, promptfoo, garak và axe-a11y hằng đêm. Chúng từng chạy trên runner hosted 7 GB và
-  chết trên `release/v3.8.51` mà không có ai theo dõi. Trường hợp xấu nhất trên máy là 2 job nặng + 2 job nhẹ ≈
-  30 + 12 GB — vượt quá 31 GB RAM nhưng vẫn nằm trong 16 GB swap; giải pháp thực sự để có thêm dư địa là tăng RAM
-  cho VM Proxmox (`tomni-proxmox-113`), khi đó các giới hạn bằng label có thể tăng thành 3 job nặng + 2 job nhẹ.
-- **Cố ý giảm số lượng listener.** Bốn unit OmniRoute đã bị vô hiệu hóa vào 2026-08-29 — vì chỉ có
-  `ci.yml` `Build` và các tác vụ hằng đêm sử dụng máy này, 8 listener từng ở trạng thái rảnh và mỗi listener bổ sung là một
-  đối tượng tiềm năng có thể chiếm 14 GB. Giới hạn của janitor là 6 (`MAX_ACTIVE_RUNNERS=6` trong cron): nó đếm
-  mọi `Runner.Listener` trên máy, và OmniHeuris + OmniMind bổ sung hai listener vào bốn listener của chúng ta.
-- **Không bao giờ dọn dẹp `/tmp` hoặc `_work` bằng tay khi có bất kỳ runner nào đang bận.** Việc
-  kiểm tra rồi xóa với một khoảng trống giữa hai thao tác là nguyên nhân khiến một job Build đang chạy bị mất
-  `_work` vào 2026-08-27. Janitor thực hiện kiểm tra và xóa trong một bước;
+- **Mỗi lần chỉ chạy một bản dựng Turbopack — được thực thi bằng nhãn.** Mọi job chạy một
+  `next build` Turbopack đầy đủ đều nhắm đến `[self-hosted, omni-build]`, và chỉ
+  **`omniroute-113-5`** mang nhãn đó: `ci.yml` `Build`, `npm-publish.yml` `publish`,
+  `nightly-v4-build`, `preview-artifact`, bản dựng a11y hằng đêm (#16853) và
+  `docker-publish.yml` **amd64** (webpack bên trong BuildKit — Turbopack đã panic tại đó,
+  lượt chạy 33253576569). Nhánh Docker arm64 vẫn chạy trên `ubuntu-24.04-arm`.
+  `docker-publish` amd64 dùng chung nhóm đồng thời `heavy-build-main` với `ci.yml` `Build`
+  (`cancel-in-progress: false`). Docker Engine phải chạy trên `omniroute-113-5`. Khe Turbopack
+  thứ hai không đủ sức chứa trong 78 GB (2 × 33–37 GB cộng với phần còn lại của máy); khe thứ
+  hai chỉ an toàn cho các bản dựng webpack.
+- **Release-Green có khe riêng (2026-10-18).** Trước thời điểm đó, cả hai quy trình xác thực
+  Release-Green đều chạy trên `omni-build`: với mỗi lần push (~10 lần/giờ, 97 trên 100 lượt chạy
+  push bị hủy giữa chừng trong một ngày) và ba lượt quét đầy đủ ~2 giờ mỗi ngày (lượt quét lúc
+  05:29 đã chờ khe trong 6 giờ) — khe dựng duy nhất đã bị đăng ký vượt công suất gấp nhiều lần,
+  khiến các PR Build có nguồn gốc nội bộ phải chờ hàng giờ. `release-green` và `main-green` hiện
+  nhắm đến `omni-release` (chỉ `omniroute-113-6`) với `OMNIROUTE_USE_TURBOPACK=0`, và một lượt
+  chạy đã bắt đầu sẽ không còn bị hủy bởi lần push mới hơn (khe đang chờ vẫn hợp nhất cơn bão
+  lượt chạy). `tests/unit/build/runner-capacity-routing.test.ts` cố định việc định tuyến, chuyển
+  sang webpack và đảm bảo rằng không có tác vụ nào trên `omni-release` dựng bằng Turbopack.
+- **Nhóm nhẹ: `omni-light`.** `omniroute-113` và `omniroute-113-2` chạy các tác vụ hằng đêm chỉ
+  cần `next build` cho backend (~5–6 GB; webpack) và `quality.yml` `lint-guard`.
+  `omniroute-113` có `MemoryHigh=4G` cho đến 2026-10-18 — bản dựng promptfoo đã phải liên tục
+  thu hồi bộ nhớ trong suốt 54 phút tại đó; 8 GB loại bỏ tình trạng điều tiết này.
+- **Cố ý sử dụng ít listener hơn.** Bốn unit OmniRoute đã bị vô hiệu hóa vào 2026-08-29 — mỗi
+  listener bổ sung là một bên thuê khác chia sẻ ngân sách bộ nhớ nêu trên. Giới hạn tối đa của
+  janitor là 6 (`MAX_ACTIVE_RUNNERS=6` trong cron): nó đếm mọi `Runner.Listener` trên máy, và
+  OmniHeuris + OmniMind bổ sung thêm hai listener vào bốn listener của chúng ta.
+- **Không bao giờ dọn dẹp `/tmp` hoặc `_work` thủ công khi bất kỳ runner nào đang bận.** Việc
+  kiểm tra rồi xóa với một khoảng trễ giữa hai thao tác là nguyên nhân khiến một job Build đang
+  chạy bị mất `_work` vào 2026-08-27. Janitor thực hiện việc kiểm tra và xóa trong một bước;
   hãy để nó xử lý.
-- Dừng runner giữa chừng sẽ hủy job (đã quan sát trực tiếp): chỉ chạy `systemctl stop`
-  khi listener của nó không có tiến trình con `Runner.Worker` — và thực hiện việc đó trong một lệnh duy nhất.
-- Các workflow không được lưu tạm artefact trong `/tmp` (đó là RAM). Hãy tải xuống
-  `$RUNNER_TEMP` (nằm trên đĩa, riêng cho từng runner) — artefact `next-build` 1.3 GB mất 27–32
-  phút để được ghi vào tmpfs và 2 phút để upload từ đĩa.
-- VPS `.15` chỉ dành cho homologation — tuyệt đối không chạy runner CI.
+- Việc dừng một runner giữa chừng sẽ hủy job (đã quan sát trực tiếp): chỉ chạy `systemctl stop`
+  khi listener của runner đó không có tiến trình con `Runner.Worker` — và hãy thực hiện trong
+  một lệnh duy nhất.
+- Các workflow không được lưu artefact trong `/tmp` (đó là RAM). Hãy tải xuống
+  `$RUNNER_TEMP` (trên đĩa, riêng cho từng runner) — artefact `next-build` dung lượng 1.3 GB mất
+  27–32 phút để được ghi vào tmpfs và 2 phút để tải lên từ đĩa.
+- VPS `.15` chỉ dành cho homologation — tuyệt đối không chạy các CI runner.

@@ -4,16 +4,34 @@
 
 ---
 
-Fond samostatně hostovaných runnerů (`self-hosted, omni-release` na všech osmi runnerech; `omni-build` na dvou) běží na stroji **.113**.
-Naměřeno 2026-08-28 (postmortem v3.8.50, část III):
+Fond samoobslužných runnerů běží na stroji **.113** (`tomni-proxmox-113`). Od 2026-10-18 má každý
+runner OmniRoute **jednu roli**, jeden štítek a paměťový/CPU limit, díky kterému zůstává součet
+`MemoryHigh` blízko velikosti fyzické RAM:
 
-| prostředek | hodnota                                                                                                         | význam pro plánování                                                                                                                                |
-| ---------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| RAM / CPU  | **31 GB / 32 jader** (při prvním sepsání tohoto dokumentu to bylo 16 GB)                                        | jeden `next-build` dosahuje maxima **~14 GB** → 2 souběžné náročné buildy stroj vytíží, 3 ho shodí (2026-08-28 06:42Z: load 56, dvě úlohy ztraceny) |
-| swap       | 15 GB                                                                                                           | publikování v3.8.50 zvládl za cenu swapování; zatížení je vidět v `/proc/pressure/memory`                                                           |
-| `/tmp`     | **12 GB tmpfs = RAM**                                                                                           | cokoli zde uloženého zabírá paměť; zbytky se odstraňují po 3 h                                                                                      |
-| disk       | 188 GB                                                                                                          | checkouty `_work` z 8 runnerů dosahují bez omezení ~70 GB                                                                                           |
-| runnery    | **6 listenerů**: 4 OmniRoute (1 `omni-build` + 1 pouze `omni-release` + 2 `omni-light`) + OmniHeuris + OmniMind | všechny sdílejí výše uvedenou paměť; `omniroute-113-3/-4/-7/-8` jsou zakázané (`systemctl enable --now` jeden z nich znovu spustí)                  |
+| runner               | štítek              | role                                                                                                                                     | `MemoryHigh` / `MemoryMax` | `CPUQuota`  |
+| -------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ----------- |
+| `omniroute-113-5`    | `omni-build`        | Sestavení pomocí Turbopacku: `ci.yml` `Build`, Docker amd64, `npm-publish`, `nightly-v4-build`, `preview-artifact`, noční sestavení a11y | 40 GB / 44 GB (swap 0)     | 1600 %      |
+| `omniroute-113-6`    | `omni-release`      | Release-Green (`release-green` + `main-green`), sestavení pomocí webpacku                                                                | 20 GB / 24 GB (swap 4 GB)  | 800 %       |
+| `omniroute-113-2`    | `omni-light`        | noční úlohy (Schemathesis, promptfoo, garak, k6, spuštění a11y) a `quality.yml` `lint-guard`                                             | 12 GB / 16 GB (swap 4 GB)  | 600 %       |
+| `omniroute-113`      | `omni-light`        | stejný fond jako výše                                                                                                                    | 8 GB / 12 GB               | 400 %       |
+| OmniHeuris, OmniMind | (jejich repozitáře) | pouze Dependabot (špička 155 MB každý, 2026-10-18)                                                                                       | 4 GB / 6 GB                | 200 % každý |
+
+Naměřeno 2026-10-18:
+
+| prostředek | hodnota                            | význam pro plánování                                                                                                                                                                                                                                                                                                            |
+| ---------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RAM / CPU  | **78 GB / 32 jader**               | produkční sestavení pomocí Turbopacku dosahuje při omezení pomocí cgroup špičky 33–37 GB (bez omezení 49 GB, `tests/unit/ci-build-bundler-webpack.test.ts`); sestavení pomocí webpacku přibližně 14–16 GB. Jedno sestavení pomocí Turbopacku a jedno pomocí webpacku se vejdou současně; dvě sestavení pomocí Turbopacku nikoli |
+| swap       | 16 GB                              | `omniroute-113-5` běží s vypnutým swapem (`MemorySwapMax=0`), takže je nekontrolovaně rostoucí sestavení ukončeno při dosažení limitu namísto toho, aby stroj začal odkládat paměť do swapu                                                                                                                                     |
+| `/tmp`     | **12 GB tmpfs = RAM**              | cokoli, co je tam uloženo, zabírá paměť; zbytky se odstraňují po 3 h                                                                                                                                                                                                                                                            |
+| CPU        | zaznamenána zátěž 60 na 32 jádrech | před zavedením kvót jedno sestavení pomocí Turbopacku (~1166 % CPU) společně se sadou testů pokrytí na stejném stroji připravovalo naslouchací procesy ostatních runnerů o heartbeat (`Samoobslužný runner ztratil komunikaci`, #16853)                                                                                         |
+| runnery    | **6 naslouchacích procesů**        | 4 OmniRoute + OmniHeuris + OmniMind; `omniroute-113-3/-4/-7/-8` jsou zakázané (`systemctl enable --now` jeden z nich znovu aktivuje)                                                                                                                                                                                            |
+
+Limity jsou uloženy pro každou jednotku v `/etc/systemd/system/actions.runner.<…>.service.d/override.conf`
+(předchozí hodnoty jsou zachovány jako `override.conf.bak-20261018`) a byly aplikovány za běhu pomocí
+`systemctl set-property --runtime … MemoryHigh=… MemoryMax=… CPUQuota=…` — bez restartu, takže nebyla
+ovlivněna žádná běžící úloha. Štítky se mění prostřednictvím API runnerů
+(`gh api -X DELETE repos/<repo>/actions/runners/<id>/labels/<label>` /
+`gh api -X POST repos/<repo>/actions/runners/<id>/labels -f 'labels[]=<label>'`), rovněž za běhu.
 
 ## Instalace úklidového skriptu (jednorázově na stroji)
 
@@ -50,45 +68,42 @@ součástí stejného příkazu.
 
 ## Provozní pravidla
 
-- **Limit náročných sestavení: VŽDY jen jedno — vynuceno labelem (od 2026-08-29).** Každá úloha,
-  která spouští úplný `next build`, cílí na `[self-hosted, omni-build]`, přičemž tento label má pouze
-  **`omniroute-113-5`** (přidán prostřednictvím API runnerů — bez nové
-  registrace): `ci.yml` `Build`, `npm-publish.yml` `publish`, obě
-  validace `nightly-release-green` a **amd64** v `docker-publish.yml` (hostovaný runner
-  se 7 GB skončil pro tento strom chybou ResourceExhausted — #11976). Část Dockeru pro arm64 zůstává na
-  `ubuntu-24.04-arm` (není k dispozici žádný ARM stroj) a používá webpack. Docker pro amd64 také používá webpack:
-  Turbopack u tohoto stromu uvnitř BuildKitu havaroval (`TurbopackInternalError:
-there must be a path to a root`, běh 33253576569), a to i s 31 GB; sestavení stejného
-  stromu pro arm64 pomocí webpacku na hostovaném ARM runneru uspělo. `docker-publish` pro amd64
-  sdílí skupinu souběžnosti `heavy-build-main` s úlohou `Build` v `ci.yml`
-  (`cancel-in-progress: false`), takže čeká ve frontě na jediný slot. Docker Engine
-  musí být na `omniroute-113-5` (`docker info` je prvním krokem publikační
-  úlohy). Předchozí limit byl dvě úlohy a pro 31 GB byl chybný: dne
-  2026-08-29 v 17:26 UTC dvě souběžné instance `next-build` (15,4 GB + 17,2 GB RSS) snížily
-  volnou kapacitu stroje na 5 GB při využití 4 GB swapu a kernel jednu z nich ukončil mechanismem OOM — systemd
-  zaznamenal ukončení u jednotky _druhého_ runneru, `runsvc.sh` ukončil tento listener signálem SIGKILL a
-  jeho úloha skončila zprávou „The runner has received a shutdown signal“ (stejný text jako při
-  OOM hostovaného runneru). `omniroute-113-6` si ponechává pouze `omni-release`. Náročná sestavení
-  ze sloučení do `main`, PR a nočního běhu se nyní provádějí sériově v jednom slotu; čekání ve frontě je nutná daň.
-  Druhý slot se vrátí, až virtuální stroj Proxmox dostane více RAM (48–64 GB):
-  `gh api -X POST repos/<repo>/actions/runners/<id of omniroute-113-6>/labels -f 'labels[]=omni-build'`.
-- **Fond lehkých úloh: `omni-light` (2026-08-29, #11965).** `omniroute-113` a `omniroute-113-2` mají
-  label `omni-light` pro úlohy, které potřebují pouze backendové sestavení `next build` (~5–6 GB), nikoli však úplné:
-  noční úlohy Schemathesis, promptfoo, garak a axe-a11y. Běžely na hostovaném runneru se 7 GB a
-  na `release/v3.8.51` bez povšimnutí selhaly. Nejhorší scénář na stroji jsou 2 náročné + 2 lehké úlohy ≈
-  30 + 12 GB — více než 31 GB RAM, ale v rámci 16 GB swapu; skutečným řešením pro dostatečnou rezervu je více RAM
-  ve virtuálním stroji Proxmox (`tomni-proxmox-113`), což změní limity dané labely na 3 náročné + 2 lehké úlohy.
-- **Záměrně méně listenerů.** Čtyři jednotky OmniRoute byly dne 2026-08-29 zakázány — když stroj používají pouze
-  úloha `Build` z `ci.yml` a noční běhy, 8 listenerů bylo nečinných a každý další představuje
-  potenciálního spotřebitele 14 GB. Limit úklidové úlohy je 6 (`MAX_ACTIVE_RUNNERS=6` v cronu): započítává
-  každý `Runner.Listener` na stroji a OmniHeuris + OmniMind přidávají k našim čtyřem další dva.
-- **Nikdy ručně nečistěte `/tmp` ani `_work`, když je některý runner zaneprázdněný.** Postup
-  „zkontrolovat a poté s prodlevou smazat“ způsobil, že běžící úloha Build dne
-  2026-08-27 přišla o svůj adresář `_work`. Úklidová úloha provádí kontrolu a odstranění v jediném kroku;
+- **Vždy pouze jedno sestavení Turbopack — vynuceno štítkem.** Každá úloha, která spouští úplné sestavení Turbopack
+  `next build`, cílí na `[self-hosted, omni-build]` a tento štítek má pouze
+  **`omniroute-113-5`**: `ci.yml` `Build`, `npm-publish.yml` `publish`, `nightly-v4-build`, `preview-artifact`,
+  noční sestavení a11y (#16853) a **amd64** v `docker-publish.yml` (webpack uvnitř BuildKitu —
+  Turbopack tam havaroval, běh 33253576569). Větev Dockeru pro arm64 zůstává na `ubuntu-24.04-arm`.
+  `docker-publish` pro amd64 sdílí skupinu souběžnosti `heavy-build-main` s úlohou `Build`
+  v `ci.yml` (`cancel-in-progress: false`). Na `omniroute-113-5` musí být Docker Engine. Druhý slot
+  pro Turbopack se do 78 GB nevejde (2 × 33–37 GB plus zbytek systému); druhý slot je bezpečný pouze
+  pro sestavení pomocí webpacku.
+- **Release-Green má vlastní slot (2026-10-18).** Do té doby obě validace Release-Green běžely
+  na `omni-build`: při každém pushi (~10/hodinu, 97 ze 100 běhů po pushi bylo během jednoho dne
+  zrušeno uprostřed práce) a třikrát denně při úplných průchodech trvajících ~2 h (průchod v 05:29
+  čekal na slot 6 h) — jediný slot pro sestavení byl několikanásobně přetížen a sestavení PR
+  z vlastního originu čekala celé hodiny.
+  `release-green` a `main-green` nyní cílí na `omni-release` (pouze `omniroute-113-6`) s
+  `OMNIROUTE_USE_TURBOPACK=0` a spuštěný běh již není rušen novějším pushem (čekající slot
+  stále slučuje tuto záplavu). `tests/unit/build/runner-capacity-routing.test.ts`
+  fixuje směrování, přepnutí na webpack a skutečnost, že se na `omni-release` nic nesestavuje
+  pomocí Turbopacku.
+- **Lehký fond: `omni-light`.** `omniroute-113` a `omniroute-113-2` spouštějí noční úlohy, které
+  potřebují pouze backendové sestavení `next build` (~5–6 GB; webpack), a úlohu `lint-guard`
+  z `quality.yml`. `omniroute-113`
+  měl až do 2026-10-18 nastaveno `MemoryHigh=4G` — sestavení promptfoo tam po dobu 54 minut
+  postupovalo za průběžného uvolňování paměti; 8 GB toto omezování odstraňuje.
+- **Záměrně méně listenerů.** Čtyři jednotky OmniRoute byly 2026-08-29 deaktivovány — každý další
+  listener představuje dalšího nájemce výše uvedeného paměťového rozpočtu. Limit úklidové úlohy
+  je 6 (`MAX_ACTIVE_RUNNERS=6` v cronu): počítá každý `Runner.Listener` na serveru a OmniHeuris
+  spolu s OmniMind přidávají další dva k našim čtyřem.
+- **Nikdy ručně nečistěte `/tmp` ani `_work`, dokud je některý runner zaneprázdněn.** Postup
+  nejprve zkontrolovat a následně s prodlevou smazat způsobil, že spuštěná úloha Build přišla
+  2026-08-27 o svůj adresář `_work`. Úklidová úloha provádí kontrolu a odstranění v jediném kroku;
   nechte to na ní.
-- Zastavení runneru během úlohy tuto úlohu zruší (ověřeno za provozu): `systemctl stop` používejte pouze
-  tehdy, když jeho listener nemá žádného potomka `Runner.Worker` — a proveďte to jediným příkazem.
-- Workflow nesmějí ukládat artefakty do `/tmp` (je v RAM). Stahujte do
-  `$RUNNER_TEMP` (na disku, samostatně pro každý runner) — uložení artefaktu `next-build` o velikosti 1,3 GB
+- Zastavení runneru uprostřed úlohy tuto úlohu zruší (ověřeno za provozu): `systemctl stop`
+  používejte pouze tehdy, když jeho listener nemá žádného potomka `Runner.Worker` — a proveďte
+  to jediným příkazem.
+- Workflow nesmí ukládat artefakty do `/tmp` (nachází se v RAM). Stahujte je do
+  `$RUNNER_TEMP` (na disku, samostatně pro každý runner) — stažení 1,3GB artefaktu `next-build`
   na tmpfs trvalo 27–32 minut, zatímco jeho nahrání z disku trvalo 2 minuty.
 - VPS `.15` slouží pouze k homologaci — nikdy na něm neběží CI runnery.

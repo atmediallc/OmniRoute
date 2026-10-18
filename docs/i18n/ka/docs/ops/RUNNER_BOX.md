@@ -4,16 +4,34 @@
 
 ---
 
-თვითჰოსტირებული პული (რვავე რანერზე `self-hosted, omni-release`; ორ მათგანზე `omni-build`) მუშაობს **.113** სერვერზე.
-გაზომილია 2026-08-28 (v3.8.50-ის ინციდენტის შემდგომი ანალიზი, ნაწილი III):
+თვითჰოსტირებული პული მუშაობს **.113** სერვერზე (`tomni-proxmox-113`). 2026-10-18-დან თითოეულ
+OmniRoute runner-ს აქვს **ერთი როლი**, ერთი label და მეხსიერების/CPU-ის ბიუჯეტი, რომელიც
+`MemoryHigh`-ების ჯამს ფიზიკურ RAM-თან ახლოს ინარჩუნებს:
 
-| რესურსი   | მნიშვნელობა                                                                                                     | რას ნიშნავს ეს განრიგისთვის                                                                                                                                                                   |
-| --------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| RAM / CPU | **31 GB / 32 ბირთვი** (ამ დოკუმენტის თავდაპირველად დაწერისას იყო 16 GB)                                         | ერთი `next-build` პიკურ მომენტში მოიხმარს **~14 GB**-ს → 2 პარალელური მძიმე ბილდი სერვერს სრულად ტვირთავს, 3 კი მწყობრიდან გამოჰყავს (2026-08-28 06:42Z: დატვირთვა 56, ორი დავალება დაიკარგა) |
-| swap      | 15 GB                                                                                                           | v3.8.50-ის გამოქვეყნების პროცესი swap-ის გამოყენებით დაასრულა; დატვირთვა ჩანს `/proc/pressure/memory`-ში                                                                                      |
-| `/tmp`    | **12 GB tmpfs = RAM**                                                                                           | ყველაფერი, რაც იქ ინახება, მეხსიერებას იკავებს; ნარჩენები 3 სთ-ის შემდეგ იწმინდება                                                                                                            |
-| დისკი     | 188 GB                                                                                                          | 8 რანერის `_work` checkout-ები შეზღუდვის გარეშე ~70 GB-მდე იზრდება                                                                                                                            |
-| რანერები  | **6 მსმენელი**: 4 OmniRoute (1 `omni-build` + 1 მხოლოდ `omni-release` + 2 `omni-light`) + OmniHeuris + OmniMind | ყველა მათგანი ზემოთ მითითებულ მეხსიერებას იზიარებს; `omniroute-113-3/-4/-7/-8` გამორთულია (`systemctl enable --now` ერთ-ერთ მათგანს ხელახლა ჩართავს)                                          |
+| runner               | label                | როლი                                                                                                                            | `MemoryHigh` / `MemoryMax` | `CPUQuota`      |
+| -------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | --------------- |
+| `omniroute-113-5`    | `omni-build`         | Turbopack-ის build-ები: `ci.yml` `Build`, Docker amd64, `npm-publish`, `nightly-v4-build`, `preview-artifact`, ღამის a11y build | 40 GB / 44 GB (swap 0)     | 1600 %          |
+| `omniroute-113-6`    | `omni-release`       | Release-Green (`release-green` + `main-green`), webpack-ის build                                                                | 20 GB / 24 GB (swap 4 GB)  | 800 %           |
+| `omniroute-113-2`    | `omni-light`         | ღამის პროცესები (Schemathesis, promptfoo, garak, k6, a11y boot) და `quality.yml` `lint-guard`                                   | 12 GB / 16 GB (swap 4 GB)  | 600 %           |
+| `omniroute-113`      | `omni-light`         | იგივე პული, რაც ზემოთ                                                                                                           | 8 GB / 12 GB               | 400 %           |
+| OmniHeuris, OmniMind | (მათი რეპოზიტორიები) | მხოლოდ Dependabot (თითოეულის პიკი 155 MB, 2026-10-18)                                                                           | 4 GB / 6 GB                | თითოეულზე 200 % |
+
+გაზომილია 2026-10-18:
+
+| რესურსი    | მნიშვნელობა                        | რას ნიშნავს ეს დაგეგმვისთვის                                                                                                                                                                                                                                                          |
+| ---------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RAM / CPU  | **78 GB / 32 ბირთვი**              | Turbopack-ის production build-ის პიკი cgroup-ის ლიმიტის პირობებში 33–37 GB-ია (ლიმიტის გარეშე 49 GB, `tests/unit/ci-build-bundler-webpack.test.ts`); webpack-ის build-ის — დაახლოებით 14–16 GB. ერთი Turbopack-ისა და ერთი webpack-ის build ერთად ეტევა; Turbopack-ის ორი build — არა |
+| swap       | 16 GB                              | `omniroute-113-5` მუშაობს გამორთული swap-ით (`MemorySwapMax=0`), ამიტომ კონტროლიდან გასული build თავის ლიმიტზე წყდება, ნაცვლად იმისა, რომ სერვერმა swap-ის გამოყენება დაიწყოს                                                                                                         |
+| `/tmp`     | **12 GB tmpfs = RAM**              | ყველაფერი, რაც იქ ინახება, მეხსიერებას იკავებს; ნარჩენები 3 საათის შემდეგ იშლება                                                                                                                                                                                                      |
+| CPU        | 32 ბირთვზე დაფიქსირდა 60 დატვირთვა | კვოტების დაწესებამდე, ერთი Turbopack-ის build (~1166 % CPU) და იმავე სერვერზე გაშვებული coverage suite სხვა listener-ების heartbeat-ებს რესურსის გარეშე ტოვებდა (`The self-hosted runner lost communication`, #16853)                                                                 |
+| runner-ები | **6 listener**                     | 4 OmniRoute + OmniHeuris + OmniMind; `omniroute-113-3/-4/-7/-8` გამორთულია (`systemctl enable --now` ერთ-ერთ მათგანს კვლავ რთავს)                                                                                                                                                     |
+
+ლიმიტები ინახება თითოეული unit-ის `/etc/systemd/system/actions.runner.<…>.service.d/override.conf`-ში
+(წინა მნიშვნელობები შენახულია, როგორც `override.conf.bak-20261018`) და მოქმედ სისტემაზე გამოყენებულ იქნა
+`systemctl set-property --runtime … MemoryHigh=… MemoryMax=… CPUQuota=…` ბრძანებით — გადატვირთვის გარეშე, ამიტომ
+არცერთი მიმდინარე job არ შეხებია. Label-ები იცვლება runners API-ის მეშვეობით
+(`gh api -X DELETE repos/<repo>/actions/runners/<id>/labels/<label>` /
+`gh api -X POST repos/<repo>/actions/runners/<id>/labels -f 'labels[]=<label>'`), ასევე მოქმედ სისტემაზე.
 
 ## janitor-ის დაყენება (ერთჯერადად, სერვერზე)
 
@@ -42,49 +60,39 @@ Runner-ის ნაგულისხმევი `KillMode=process` ერთ�
 (`/etc/systemd/system/actions.runner.diegosouzapw-OmniRoute.<name>.service.d/10-killmode.conf`)
 `KillMode=mixed`-ით: ჯერ SIGTERM ეგზავნება listener-ს, ხოლო `TimeoutStop`-ის დადგომისას SIGKILL — მთელ cgroup-ს. ცვლილება ძალაში შევა ერთეულის შემდეგი გადატვირთვისას — გადატვირთეთ **ერთ ჯერზე მხოლოდ ერთი runner და მხოლოდ მაშინ, როცა ის უქმეა**, უქმეობის შემოწმება და გადატვირთვა კი ერთსა და იმავე ბრძანებაში შეასრულეთ.
 
-## ექსპლუატაციის წესები
+## მუშაობის წესები
 
-- **მძიმე build-ების ზღვარი: ერთ ჯერზე ONE — უზრუნველყოფილია label-ით (2026-08-29-დან).** ყველა job,
-  რომელიც სრულ `next build`-ს ასრულებს, მიზნად იყენებს `[self-hosted, omni-build]`-ს და ეს label მხოლოდ
-  **`omniroute-113-5`**-ს აქვს (დამატებულია runners API-ის მეშვეობით — ხელახალი
-  რეგისტრაციის გარეშე): `ci.yml`-ის `Build`, `npm-publish.yml`-ის `publish`, ორივე
-  `nightly-release-green` ვალიდაცია და `docker-publish.yml`-ის **amd64** (ამ ხისთვის hosted
-  7 GB გარემოში ResourceExhausted მოხდა — #11976). arm64 Docker-ის ნაწილი კვლავ
-  `ubuntu-24.04-arm`-ზე რჩება (ARM მანქანა არ გვაქვს) და webpack-ს იყენებს. Docker amd64-იც webpack-ს იყენებს:
-  Turbopack ამ ხეზე BuildKit-ის შიგნით ავარიულად დასრულდა (`TurbopackInternalError:
-there must be a path to a root`, run 33253576569), 31 GB-ის პირობებშიც კი; იმავე
-  ხის arm64 webpack build hosted ARM-ზე წარმატებით დასრულდა. `docker-publish`-ის amd64
-  `heavy-build-main` concurrency group-ს იზიარებს `ci.yml`-ის `Build`-თან
-  (`cancel-in-progress: false`), ამიტომ ერთადერთ სლოტზე რიგში დგება. Docker Engine
-  აუცილებლად უნდა იყოს `omniroute-113-5`-ზე (`docker info` გამოქვეყნების
-  job-ის პირველი ნაბიჯია). ადრე ზღვარი ორი იყო და 31 GB-ისთვის ეს არასწორი აღმოჩნდა:
-  2026-08-29 17:26 UTC-ზე ორმა ერთდროულმა `next-build`-მა (15.4 GB + 17.2 GB RSS) მანქანაზე
-  მხოლოდ 5 GB თავისუფალი მეხსიერება დატოვა, გამოყენებული იყო 4 GB swap და kernel-მა OOM-ის გამო
-  ერთ-ერთი მათგანი მოკლა — systemd-მა ეს მოკვლა _სხვა_ runner-ის ერთეულს მიაკუთვნა, `runsvc.sh`-მა
-  იმ listener-ს SIGKILL გაუგზავნა და მასზე გაშვებული job დასრულდა შეტყობინებით
-  "Runner-მა გამორთვის სიგნალი მიიღო" (იგივე ტექსტი, რაც hosted-runner-ის OOM-ისას).
-  `omniroute-113-6` მხოლოდ `omni-release`-ს ინარჩუნებს. `main`-ში merge-ებიდან, PR-ებიდან და
-  nightly გაშვებიდან წამოსული მძიმე build-ები ახლა ერთ სლოტზე თანმიმდევრულად სრულდება; რიგი ამის
-  საფასურია. მეორე სლოტი დაბრუნდება იმ დღეს, როდესაც Proxmox VM-ს მეტი RAM ექნება (48–64 GB):
-  `gh api -X POST repos/<repo>/actions/runners/<id of omniroute-113-6>/labels -f 'labels[]=omni-build'`.
-- **მსუბუქი pool: `omni-light` (2026-08-29, #11965).** `omniroute-113`-სა და `omniroute-113-2`-ს აქვთ
-  `omni-light` იმ job-ებისთვის, რომლებსაც მხოლოდ backend-ის `next build` (~5–6 GB) სჭირდებათ და არა სრული:
-  nightly Schemathesis, promptfoo, garak და axe-a11y job-ები. ისინი hosted 7 GB runner-ზე სრულდებოდა და
-  `release/v3.8.51`-ზე შეფერხდა ისე, რომ ამას არავინ აკვირდებოდა. მანქანაზე უარესი შემთხვევაა 2 მძიმე + 2 მსუბუქი ≈
-  30 + 12 GB — 31 GB RAM-ზე მეტი, თუმცა 16 GB swap-ის ფარგლებში; თავისუფალი რესურსის მარაგის რეალური გამოსავალია
-  Proxmox VM-ისთვის (`tomni-proxmox-113`) მეტი RAM-ის დამატება, რაც label-ებით განსაზღვრულ ზღვარს 3 მძიმემდე + 2 მსუბუქამდე გაზრდის.
-- **განზრახ ნაკლები listener.** OmniRoute-ის ოთხი ერთეული 2026-08-29-ს გამოირთო — რადგან მანქანას მხოლოდ
-  `ci.yml`-ის `Build` და nightly job-ები იყენებდნენ, 8 listener უქმად იყო და თითოეული დამატებითი listener
-  პოტენციური 14 GB-იანი tenant-ია. janitor-ის ზღვარია 6 (`MAX_ACTIVE_RUNNERS=6` cron-ში): ის მანქანაზე
-  თითოეულ `Runner.Listener`-ს ითვლის, ხოლო OmniHeuris და OmniMind ჩვენს ოთხს კიდევ ორს უმატებს.
+- **ერთდროულად მხოლოდ ერთი Turbopack build — აღსრულებულია label-ით.** ყველა job, რომელიც სრულ Turbopack
+  `next build`-ს უშვებს, მიზნად `[self-hosted, omni-build]`-ს იყენებს და მხოლოდ **`omniroute-113-5`** ატარებს ამ
+  label-ს: `ci.yml` `Build`, `npm-publish.yml` `publish`, `nightly-v4-build`, `preview-artifact`,
+  ღამის a11y build (#16853) და `docker-publish.yml` **amd64** (webpack BuildKit-ის შიგნით —
+  Turbopack იქ ავარიულად გაითიშა, run 33253576569). arm64 Docker-ის ნაწილი კვლავ `ubuntu-24.04-arm`-ზე რჩება.
+  `docker-publish`-ის amd64 `ci.yml`-ის `Build`-თან ერთად იყენებს `heavy-build-main` concurrency group-ს
+  (`cancel-in-progress: false`). Docker Engine უნდა მუშაობდეს `omniroute-113-5`-ზე. Turbopack-ის მეორე
+  slot 78 GB-ში ვერ ეტევა (2 × 33–37 GB და დამატებით სისტემის დანარჩენი დატვირთვა); მეორე slot უსაფრთხოა მხოლოდ
+  webpack build-ებისთვის.
+- **Release-Green-ს საკუთარი slot აქვს (2026-10-18).** მანამდე Release-Green-ის ორივე validation
+  `omni-build`-ზე სრულდებოდა: ყოველ push-ზე (~10/საათში, ერთ დღეში 100 push run-იდან 97 მუშაობის შუაში
+  გაუქმდა) და დღეში სამჯერ ~2-საათიანი სრული შემოწმებით (05:29-ის შემოწმება slot-ს 6 საათი ელოდა) —
+  ერთადერთი build slot-ის მოთხოვნა მის შესაძლებლობას რამდენჯერმე აღემატებოდა და იმავე origin-იდან წამოსული PR Build-ები საათობით იცდიდნენ.
+  `release-green` და `main-green` ახლა მიზნად `omni-release`-ს იყენებს (მხოლოდ `omniroute-113-6`)
+  `OMNIROUTE_USE_TURBOPACK=0`-ით, ხოლო დაწყებული run უფრო ახალი push-ის გამო აღარ უქმდება
+  (მოლოდინის slot კვლავ აერთიანებს მოთხოვნების ნაკადს). `tests/unit/build/runner-capacity-routing.test.ts`
+  აფიქსირებს routing-ს, webpack-ზე გადართვას და იმას, რომ `omni-release`-ზე არაფერი იბილდება Turbopack-ით.
+- **მსუბუქი pool: `omni-light`.** `omniroute-113` და `omniroute-113-2` ასრულებენ ღამის პროცესებს, რომლებსაც
+  მხოლოდ backend-ის `next build` სჭირდება (~5–6 GB; webpack), ასევე `quality.yml`-ის `lint-guard`-ს. `omniroute-113`-ს
+  2026-10-18-მდე `MemoryHigh=4G` ჰქონდა — promptfoo build იქ 54 წუთის განმავლობაში მეხსიერების გამოთავისუფლებით
+  ძლივს მუშაობდა; 8 GB throttling-ს ხსნის.
+- **განზრახ ნაკლები listener.** ოთხი OmniRoute unit 2026-08-29-ს გაითიშა — ყოველი დამატებითი
+  listener ზემოთ აღწერილი მეხსიერების ბიუჯეტის კიდევ ერთი მომხმარებელია. janitor-ის ზედა ზღვარია 6 (`MAX_ACTIVE_RUNNERS=6` cron-ში): ის ითვლის
+  box-ზე არსებულ ყველა `Runner.Listener`-ს, ხოლო OmniHeuris და OmniMind ჩვენს ოთხს კიდევ ორს ამატებს.
 - **არასოდეს გაასუფთაოთ `/tmp` ან `_work` ხელით, სანამ რომელიმე runner დაკავებულია.**
-  შემოწმებამ და შემდეგ მათ შორის ინტერვალით წაშლამ გამოიწვია ის, რომ 2026-08-27-ს აქტიურმა Build job-მა
-  საკუთარი `_work` დაკარგა. janitor შემოწმებასა და წაშლას ერთ ნაბიჯში ასრულებს;
+  შემოწმებასა და წაშლას შორის შუალედის მქონე check-then-delete-ის გამო აქტიურმა Build job-მა
+  2026-08-27-ს თავისი `_work` დაკარგა. janitor შემოწმებასა და წაშლას ერთ ნაბიჯში ასრულებს;
   ეს მას მიანდეთ.
-- job-ის შესრულებისას runner-ის გაჩერება job-ს აუქმებს (დაკვირვებულია რეალურ გარემოში): `systemctl stop`
-  გამოიყენეთ მხოლოდ მაშინ, როდესაც მის listener-ს `Runner.Worker` შვილობილი პროცესი არ ჰყავს — და ეს
-  ერთ ბრძანებაში შეასრულეთ.
-- Workflow-ებმა artefact-ები `/tmp`-ში არ უნდა განათავსონ (ის RAM-შია). ჩამოტვირთეთ
-  `$RUNNER_TEMP`-ში (დისკზე, თითოეული runner-ისთვის ცალ-ცალკე) — 1.3 GB-იანი `next-build` artefact-ის
-  tmpfs-ზე მოთავსებას 27–32 წუთი დასჭირდა, ხოლო დისკიდან ატვირთვას — 2 წუთი.
-- `.15` VPS მხოლოდ homologation-ისთვისაა — მასზე CI runner-ები არასოდეს სრულდება.
+- runner-ის job-ის მიმდინარეობისას გაჩერება job-ს აუქმებს (დაკვირვებულია რეალურ გარემოში): `systemctl stop` გამოიყენეთ მხოლოდ
+  მაშინ, როცა მის listener-ს `Runner.Worker` child არ ჰყავს — და ეს ერთ command-ში გააკეთეთ.
+- Workflow-ებმა არტეფაქტები `/tmp`-ში არ უნდა შეინახონ (ის RAM-შია). ჩამოტვირთეთ
+  `$RUNNER_TEMP`-ში (დისკზე, ცალკე თითოეული runner-ისთვის) — 1.3 GB-იან `next-build` არტეფაქტს tmpfs-ზე ჩასაწერად 27–32
+  წუთი დასჭირდა, ხოლო დისკიდან ატვირთვას — 2 წუთი.
+- `.15` VPS მხოლოდ homologation-ისთვისაა — მასზე CI runner-ები არასოდეს მუშაობს.

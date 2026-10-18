@@ -4,16 +4,34 @@
 
 ---
 
-A saját üzemeltetésű készlet (mind a nyolc futtatón `self-hosted, omni-release`; kettőn `omni-build`) a **.113** gépen fut.
-Mérve: 2026-08-28 (v3.8.50 utóelemzés, III. rész):
+Az önálló üzemeltetésű készlet a **.113** gépen (`tomni-proxmox-113`) fut. 2026-10-18 óta minden
+OmniRoute-futtatónak **egy szerepköre**, egy címkéje és olyan memória-/CPU-kerete van, amelynek köszönhetően a
+`MemoryHigh` értékek összege közel marad a fizikai RAM méretéhez:
 
-| erőforrás     | érték                                                                                                                     | ütemezési jelentősége                                                                                                                                         |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| RAM / CPU     | **31 GB / 32 mag** (a dokumentum első megírásakor 16 GB volt)                                                             | egy `next-build` csúcsterhelése **~14 GB** → 2 egyidejű nehéz build telíti a gépet, 3 pedig leállítja (2026-08-28 06:42Z: terhelés 56, két feladat elveszett) |
-| lapozóterület | 15 GB                                                                                                                     | a v3.8.50 közzététele közben lapozással vészelte át a terhelést; a memórianyomás a `/proc/pressure/memory` fájlban látható                                    |
-| `/tmp`        | **12 GB tmpfs = RAM**                                                                                                     | minden, ami ide kerül, memóriát foglal; a maradványok 3 óra után törlődnek                                                                                    |
-| lemez         | 188 GB                                                                                                                    | a 8 futtató `_work` munkapéldányai korlátozás nélkül elérik a ~70 GB-ot                                                                                       |
-| futtatók      | **6 figyelőfolyamat**: 4 OmniRoute (1 `omni-build` + 1 kizárólag `omni-release` + 2 `omni-light`) + OmniHeuris + OmniMind | mind a fenti memórián osztoznak; az `omniroute-113-3/-4/-7/-8` le van tiltva (a `systemctl enable --now` paranccsal az egyik visszakapcsolható)               |
+| futtató              | címke            | szerepkör                                                                                                                        | `MemoryHigh` / `MemoryMax` | `CPUQuota`      |
+| -------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | --------------- |
+| `omniroute-113-5`    | `omni-build`     | Turbopack-buildek: `ci.yml` `Build`, Docker amd64, `npm-publish`, `nightly-v4-build`, `preview-artifact`, az éjszakai a11y-build | 40 GB / 44 GB (swap 0)     | 1600 %          |
+| `omniroute-113-6`    | `omni-release`   | Release-Green (`release-green` + `main-green`), webpack-build                                                                    | 20 GB / 24 GB (swap 4 GB)  | 800 %           |
+| `omniroute-113-2`    | `omni-light`     | éjszakai futások (Schemathesis, promptfoo, garak, k6, a11y boot) és a `quality.yml` `lint-guard` feladata                        | 12 GB / 16 GB (swap 4 GB)  | 600 %           |
+| `omniroute-113`      | `omni-light`     | ugyanaz a készlet, mint fent                                                                                                     | 8 GB / 12 GB               | 400 %           |
+| OmniHeuris, OmniMind | (saját tárolóik) | csak Dependabot (egyenként 155 MB-os csúcsérték, 2026-10-18)                                                                     | 4 GB / 6 GB                | egyenként 200 % |
+
+Mérve: 2026-10-18:
+
+| erőforrás | érték                   | mit jelent ez az ütemezés szempontjából                                                                                                                                                                                                                |
+| --------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| RAM / CPU | **78 GB / 32 mag**      | egy Turbopack éles build cgroup-korlát alatt 33–37 GB-nál tetőzik (korlátozás nélkül 49 GB, `tests/unit/ci-build-bundler-webpack.test.ts`); egy webpack-build ~14–16 GB-nál. Egy Turbopack- és egy webpack-build együtt elfér; két Turbopack-build nem |
+| swap      | 16 GB                   | az `omniroute-113-5` kikapcsolt swappal fut (`MemorySwapMax=0`), így egy elszabadult build a korlátjánál leáll, ahelyett hogy a gépet swapelésre kényszerítené                                                                                         |
+| `/tmp`    | **12 GB tmpfs = RAM**   | minden, amit itt tárolnak, memóriát foglal; a maradványokat 3 óra után eltávolítja a rendszer                                                                                                                                                          |
+| CPU       | 60-as terhelés 32 magon | a kvóták előtt egy Turbopack-build (~1166 % CPU) és az ugyanazon a gépen futó lefedettségi tesztcsomag együtt ellehetetlenítette a többi figyelőfolyamat heartbeatjeit (`The self-hosted runner lost communication`, #16853)                           |
+| futtatók  | **6 figyelőfolyamat**   | 4 OmniRoute + OmniHeuris + OmniMind; az `omniroute-113-3/-4/-7/-8` le van tiltva (a `systemctl enable --now` újra elindít egyet)                                                                                                                       |
+
+A korlátok az egyes unitok `/etc/systemd/system/actions.runner.<…>.service.d/override.conf`
+fájljában találhatók (a korábbi értékeket az `override.conf.bak-20261018` őrzi), és élőben lettek alkalmazva a
+`systemctl set-property --runtime … MemoryHigh=… MemoryMax=… CPUQuota=…` paranccsal — újraindítás nélkül, így egyetlen
+futó feladatot sem érintettek. A címkék szintén élőben, a runners API-n keresztül módosíthatók
+(`gh api -X DELETE repos/<repo>/actions/runners/<id>/labels/<label>` /
+`gh api -X POST repos/<repo>/actions/runners/<id>/labels -f 'labels[]=<label>'`).
 
 ## A takarító telepítése (egyszeri művelet a gépen)
 
@@ -56,57 +74,45 @@ felülíró konfiguráció
 üresjáratban**, az üresjárat ellenőrzését és az újraindítást ugyanabban a parancsban
 végrehajtva.
 
-## Üzemeltetési szabályok
+## Működési szabályok
 
-- **Nagy build korlátja: egyszerre EGY — címkével kikényszerítve (2026-08-29 óta).** Minden olyan
-  feladat, amely teljes `next build` folyamatot futtat, a `[self-hosted, omni-build]` célpontot
-  használja, és csak az **`omniroute-113-5`** rendelkezik ezzel a címkével (a runners API-n
-  keresztül hozzáadva — újraregisztrálás nélkül): a `ci.yml` `Build`, az `npm-publish.yml`
-  `publish`, mindkét `nightly-release-green` ellenőrzés, valamint a `docker-publish.yml`
-  **amd64** ága (a hosztolt, 7 GB-os környezetben ResourceExhausted történt ezen a fán —
-  #11976). Az arm64 Docker-ág továbbra is az `ubuntu-24.04-arm` környezeten fut (nincs ARM
-  gép), webpack használatával. A Docker amd64 szintén webpacket használ: a Turbopack ezen a
-  fán pánikhibával leállt a BuildKitben (`TurbopackInternalError:
-there must be a path to a root`, 33253576569-es futás), még 31 GB mellett is; ugyanezen
-  fa arm64 webpack buildje sikeresen lefutott a hosztolt ARM-környezetben. A
-  `docker-publish` amd64 ága ugyanazt a `heavy-build-main` párhuzamossági csoportot használja,
-  mint a `ci.yml` `Build` feladata (`cancel-in-progress: false`), ezért sorba áll az egyetlen
-  végrehajtási helyre. A Docker Engine-nek elérhetőnek kell lennie az `omniroute-113-5`
-  gépen (a közzétételi feladat első lépése a `docker info`). Korábban kettő volt a korlát,
-  de ez hibásnak bizonyult 31 GB mellett: 2026-08-29 17:26 UTC időpontban két párhuzamos
-  `next-build` (15.4 GB + 17.2 GB RSS) 5 GB-ra csökkentette a gép szabad memóriáját,
-  miközben 4 GB swap volt használatban, és a kernel OOM-kezelője kilőtte az egyik folyamatot
-  — a systemd a leállítást a _másik_ runner egységénél könyvelte el, a `runsvc.sh` SIGKILL
-  jellel leállította annak listenerét, az azon futó feladat pedig "The runner has received
-  a shutdown signal" üzenettel állt le (ugyanaz a szöveg, mint hosztolt runner OOM esetén).
-  Az `omniroute-113-6` kizárólag az `omni-release` címkét tartja meg. A `main` ág egyesítéseiből,
-  PR-ekből és az éjszakai futásból származó nagy buildek mostantól sorosan, egyetlen helyen
-  futnak; ennek ára a várakozási sor. A második hely azon a napon tér vissza, amikor a
-  Proxmox VM több RAM-ot kap (48–64 GB):
-  `gh api -X POST repos/<repo>/actions/runners/<id of omniroute-113-6>/labels -f 'labels[]=omni-build'`.
-- **Könnyű feladatok készlete: `omni-light` (2026-08-29, #11965).** Az `omniroute-113` és az
-  `omniroute-113-2` rendelkezik az `omni-light` címkével azokhoz a feladatokhoz, amelyeknek csak
-  backendet érintő `next build` szükséges (~5–6 GB), teljes build azonban nem: az éjszakai
-  Schemathesis-, promptfoo-, garak- és axe-a11y-feladatokhoz. Ezek korábban a hosztolt, 7 GB-os
-  runneren futottak, és felügyelet nélkül leálltak a `release/v3.8.51` ágon. A gép legrosszabb
-  esete 2 nagy + 2 könnyű ≈ 30 + 12 GB — ez meghaladja a 31 GB RAM-ot, de belefér a 16 GB
-  swapba; a valódi megoldás a megfelelő tartalék biztosítására több RAM a Proxmox VM-ben
-  (`tomni-proxmox-113`), ami a címkékkel meghatározott korlátokat 3 nagy + 2 könnyű feladatra
-  emeli.
-- **Szándékosan kevesebb listener.** Négy OmniRoute egységet letiltottunk 2026-08-29-én —
-  mivel csak a `ci.yml` `Build` és az éjszakai feladatok használják a gépet, 8 listener
-  üresjáratban volt, és minden további listener egy potenciális 14 GB-os bérlő. A janitor
-  korlátja 6 (`MAX_ACTIVE_RUNNERS=6` a cronban): a gépen található összes `Runner.Listener`
-  folyamatot számolja, az OmniHeuris és az OmniMind pedig további kettőt ad a mi négyünkhöz.
-- **Soha ne tisztítsd kézzel a `/tmp` vagy az `_work` könyvtárat, amíg bármelyik runner
-  foglalt.** Egy olyan ellenőrzés-majd-törlés, amelynél rés volt a két művelet között, egy
-  futó Build feladat `_work` könyvtárának elvesztéséhez vezetett 2026-08-27-én. A janitor
-  egyetlen lépésben végzi el az ellenőrzést és az eltávolítást; hagyd, hogy ő végezze.
+- **Egyszerre csak egy Turbopack-build — címkével kikényszerítve.** Minden teljes Turbopack
+  `next build` parancsot futtató feladat a `[self-hosted, omni-build]` célra irányul, és csak az
+  **`omniroute-113-5`** rendelkezik ezzel a címkével: `ci.yml` `Build`, `npm-publish.yml` `publish`,
+  `nightly-v4-build`, `preview-artifact`, az éjszakai a11y-build (#16853), valamint a
+  `docker-publish.yml` **amd64** ága (webpack a BuildKiten belül — a Turbopack ott pánikhibát adott,
+  33253576569 számú futás). Az arm64 Docker-ág továbbra is az `ubuntu-24.04-arm` rendszeren fut.
+  A `docker-publish` amd64 ága ugyanazt a `heavy-build-main` párhuzamossági csoportot használja,
+  mint a `ci.yml` `Build` (`cancel-in-progress: false`). A Docker Engine-nek az
+  `omniroute-113-5` gépen kell lennie. Egy második Turbopack-hely nem fér bele a 78 GB-ba
+  (2 × 33–37 GB, plusz a gép többi terhelése); második hely csak webpack-buildekhez biztonságos.
+- **A Release-Green saját hellyel rendelkezik (2026-10-18).** Addig mindkét Release-Green-ellenőrzés
+  az `omni-build` rendszeren futott: minden pushnál (~10/óra; egy nap alatt 100 push-futásból 97-et
+  munka közben megszakítottak), továbbá naponta három, egyenként ~2 órás teljes ellenőrzésként
+  (a 05:29-es ellenőrzés 6 órát várt a helyre) — az egyetlen buildhely kapacitását többszörösen
+  túllépték az igények, és a saját eredetű PR-ek Build feladatai órákig vártak.
+  A `release-green` és a `main-green` most az `omni-release` célra irányul (csak
+  `omniroute-113-6`), `OMNIROUTE_USE_TURBOPACK=0` beállítással, és az elindult futást már nem
+  szakítja meg egy újabb push (a függőben lévő hely továbbra is összevonja a futásvihart).
+  A `tests/unit/build/runner-capacity-routing.test.ts` rögzíti az útválasztást, a webpackre
+  váltást, valamint azt, hogy az `omni-release` rendszeren semmi sem buildel Turbopackkel.
+- **Könnyű terhelésű készlet: `omni-light`.** Az `omniroute-113` és az `omniroute-113-2` futtatja
+  azokat az éjszakai feladatokat, amelyekhez csak backendes `next build` szükséges
+  (~5–6 GB; webpack), valamint a `quality.yml` `lint-guard` feladatát. Az `omniroute-113`
+  `MemoryHigh=4G` korláttal rendelkezett 2026-10-18-ig — a promptfoo-build 54 percen keresztül
+  memória-visszanyeréssel küszködött rajta; 8 GB megszünteti a korlátozás miatti lassulást.
+- **Szándékosan kevesebb listener.** Négy OmniRoute-egységet letiltottunk 2026-08-29-én — minden
+  további listener újabb fogyasztója a fenti memóriakeretnek. A takarító felső korlátja 6
+  (`MAX_ACTIVE_RUNNERS=6` a cronban): a gépen futó összes `Runner.Listener` példányt számolja,
+  az OmniHeuris és az OmniMind pedig további kettőt ad a mi négy példányunkhoz.
+- **Soha ne tisztítsd kézzel a `/tmp` vagy az `_work` könyvtárat, amíg bármely runner foglalt.**
+  Egy ellenőrzés, majd az attól időben elkülönített törlés miatt veszítette el egy aktív Build
+  feladat az `_work` könyvtárát 2026-08-27-én. A takarító egyetlen lépésben végzi el az ellenőrzést
+  és az eltávolítást; bízd rá.
 - Egy runner feladat közbeni leállítása megszakítja a feladatot (élőben megfigyelve): a
-  `systemctl stop` csak akkor használható, ha a listenernek nincs `Runner.Worker`
-  gyermekfolyamata — és ezt egyetlen parancsban kell végrehajtani.
+  `systemctl stop` csak akkor használható, ha a listenerének nincs `Runner.Worker`
+  gyermekfolyamata — és ezt egyetlen paranccsal kell elvégezni.
 - A workflow-k nem tárolhatnak műtermékeket a `/tmp` könyvtárban (az RAM-ban van). A letöltés
-  célja a `$RUNNER_TEMP` legyen (lemezen, runnerenként külön) — az 1.3 GB-os `next-build`
-  műtermék tmpfs-re történő letöltése 27–32 percig tartott, míg lemezről 2 perc alatt
-  feltöltődött.
-- A `.15` VPS kizárólag homologációs célú — soha nem futtat CI runnereket.
+  célja a `$RUNNER_TEMP` legyen (lemezen, runnerenként elkülönítve) — az 1,3 GB-os `next-build`
+  műtermék 27–32 perc alatt került a tmpfs-re, míg lemezről 2 perc alatt töltődött fel.
+- A `.15` VPS kizárólag homologációs célú — soha nem futtat CI-runnereket.

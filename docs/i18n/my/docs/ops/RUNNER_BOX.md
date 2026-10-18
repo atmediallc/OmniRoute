@@ -4,16 +4,36 @@
 
 ---
 
-Self-hosted pool (`self-hosted, omni-release` ကို runner ရှစ်ခုလုံးတွင်၊ `omni-build` ကို နှစ်ခုတွင်) သည် **.113** စက်ပေါ်တွင် အလုပ်လုပ်သည်။
-2026-08-28 တွင် တိုင်းတာထားသည် (v3.8.50 ဖြစ်ရပ်အပြီး သုံးသပ်ချက်၊ အပိုင်း III)။
+Self-hosted pool သည် **.113** စက် (`tomni-proxmox-113`) ပေါ်တွင် လည်ပတ်သည်။ 2026-10-18 မှစ၍
+OmniRoute runner တစ်ခုစီတွင် **role တစ်ခုသာ**၊ label တစ်ခုသာရှိပြီး `MemoryHigh`
+စုစုပေါင်းကို physical RAM ပမာဏနှင့် နီးကပ်စွာ ထိန်းထားနိုင်သည့် memory/CPU budget တစ်ခုစီ သတ်မှတ်ထားသည်-
 
-| အရင်းအမြစ် | တန်ဖိုး                                                                                                                      | အလုပ်အစီအစဉ်ချခြင်းအတွက် ဆိုလိုသည်မှာ                                                                                                                                                                          |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| RAM / CPU  | **31 GB / 32 cores** (ဤစာတမ်းကို စတင်ရေးသားစဉ်က 16 GB ဖြစ်ခဲ့သည်)                                                            | `next-build` တစ်ခုသည် အများဆုံး **~14 GB** အထိ သုံးစွဲသည် → လေးလံသော build ၂ ခု တစ်ပြိုင်နက်လုပ်လျှင် စက်၏စွမ်းရည်ပြည့်သွားပြီး၊ ၃ ခုဆိုလျှင် စက်ရပ်သွားသည် (2026-08-28 06:42Z: load 56၊ job နှစ်ခု ဆုံးရှုံး) |
-| swap       | 15 GB                                                                                                                        | v3.8.50 ကို publish လုပ်နေစဉ် swap အသုံးပြု၍ ပြီးမြောက်ခဲ့သည်၊ ဖိအားကို `/proc/pressure/memory` တွင် မြင်နိုင်သည်                                                                                              |
-| `/tmp`     | **12 GB tmpfs = RAM**                                                                                                        | ထိုနေရာတွင် သိမ်းထားသမျှသည် memory ကို အသုံးပြုသည်၊ ကျန်ရှိနေသောဖိုင်များကို 3 h အကြာတွင် ရှင်းလင်းသည်                                                                                                         |
-| disk       | 188 GB                                                                                                                       | runner ၈ ခု၏ `_work` checkout များသည် ကန့်သတ်ချက်မရှိဘဲ ~70 GB အထိ ရောက်ရှိသည်                                                                                                                                 |
-| runners    | **listener ၆ ခု**: OmniRoute ၄ ခု (`omni-build` ၁ ခု + `omni-release`-only ၁ ခု + `omni-light` ၂ ခု) + OmniHeuris + OmniMind | အားလုံးသည် အထက်ပါ memory ကို မျှဝေသုံးစွဲသည်၊ `omniroute-113-3/-4/-7/-8` ကို ပိတ်ထားသည် (`systemctl enable --now` ဖြင့် တစ်ခုကို ပြန်ဖွင့်နိုင်သည်)                                                            |
+| runner               | label                 | role                                                                                                                              | `MemoryHigh` / `MemoryMax` | `CPUQuota`       |
+| -------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ---------------- |
+| `omniroute-113-5`    | `omni-build`          | Turbopack build များ- `ci.yml` `Build`၊ Docker amd64၊ `npm-publish`၊ `nightly-v4-build`၊ `preview-artifact` နှင့် ညစဉ် a11y build | 40 GB / 44 GB (swap 0)     | 1600 %           |
+| `omniroute-113-6`    | `omni-release`        | Release-Green (`release-green` + `main-green`)၊ webpack build                                                                     | 20 GB / 24 GB (swap 4 GB)  | 800 %            |
+| `omniroute-113-2`    | `omni-light`          | ညစဉ်အလုပ်များ (Schemathesis၊ promptfoo၊ garak၊ k6၊ a11y boot) နှင့် `quality.yml` `lint-guard`                                    | 12 GB / 16 GB (swap 4 GB)  | 600 %            |
+| `omniroute-113`      | `omni-light`          | အထက်ပါ pool နှင့် တူညီသည်                                                                                                         | 8 GB / 12 GB               | 400 %            |
+| OmniHeuris, OmniMind | (၎င်းတို့၏ repo များ) | Dependabot သာလျှင် (တစ်ခုလျှင် အမြင့်ဆုံး 155 MB၊ 2026-10-18)                                                                     | 4 GB / 6 GB                | တစ်ခုလျှင် 200 % |
+
+2026-10-18 တွင် တိုင်းတာထားသည်-
+
+| resource  | value                                             | scheduling အတွက် ဆိုလိုသည်မှာ                                                                                                                                                                                                                                                                                                         |
+| --------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RAM / CPU | **78 GB / 32 cores**                              | cgroup cap အောက်တွင် Turbopack production build တစ်ခုသည် အမြင့်ဆုံး 33–37 GB အထိ အသုံးပြုသည် (cap မရှိလျှင် 49 GB၊ `tests/unit/ci-build-bundler-webpack.test.ts`)၊ webpack build တစ်ခုသည် ~14–16 GB ခန့် အသုံးပြုသည်။ Turbopack တစ်ခုနှင့် webpack build တစ်ခုကို အတူတကွ လည်ပတ်နိုင်သော်လည်း Turbopack build နှစ်ခုကို မလည်ပတ်နိုင်ပါ |
+| swap      | 16 GB                                             | `omniroute-113-5` သည် swap ပိတ်ထားပြီး (`MemorySwapMax=0`) လည်ပတ်သောကြောင့် ထိန်းချုပ်မရသော build တစ်ခုသည် စက်တစ်ခုလုံးကို swap အသုံးပြုစေမည့်အစား သတ်မှတ်ထားသည့် cap သို့ရောက်လျှင် ရပ်တန့်ခံရမည်                                                                                                                                    |
+| `/tmp`    | **12 GB tmpfs = RAM**                             | ထိုနေရာတွင် သိမ်းထားသမျှသည် memory ကို အသုံးပြုသည်၊ ကျန်ရှိသောဖိုင်များကို 3 h ကြာပြီးနောက် ရှင်းလင်းသည်                                                                                                                                                                                                                              |
+| CPU       | 32 cores ပေါ်တွင် load 60 ရှိသည်ကို တွေ့ရှိခဲ့သည် | quota များ မသတ်မှတ်မီ စက်တစ်ခုတည်းပေါ်တွင် Turbopack build တစ်ခု (~1166 % CPU) နှင့် coverage suite တစ်ခု အတူလည်ပတ်ခြင်းကြောင့် အခြား listener များ၏ heartbeat များအတွက် resource မလုံလောက်ခဲ့ပါ (`The self-hosted runner lost communication`, #16853)                                                                                |
+| runners   | **listener 6 ခု**                                 | OmniRoute 4 ခု + OmniHeuris + OmniMind၊ `omniroute-113-3/-4/-7/-8` များကို ပိတ်ထားသည် (`systemctl enable --now` ဖြင့် တစ်ခုကို ပြန်ဖွင့်နိုင်သည်)                                                                                                                                                                                     |
+
+ကန့်သတ်ချက်များကို unit တစ်ခုစီ၏ `/etc/systemd/system/actions.runner.<…>.service.d/override.conf`
+တွင် ထည့်သွင်းထားပြီး (ယခင်တန်ဖိုးများကို `override.conf.bak-20261018` အဖြစ် သိမ်းထားသည်)
+`systemctl set-property --runtime … MemoryHigh=… MemoryMax=… CPUQuota=…` ဖြင့် လည်ပတ်နေစဉ်
+တိုက်ရိုက် အသုံးချခဲ့သည် — restart မလုပ်ခဲ့သောကြောင့် လည်ပတ်နေသည့် job မည်သည့်တစ်ခုကိုမျှ မထိခိုက်ခဲ့ပါ။
+Label များကိုလည်း runners API မှတစ်ဆင့်
+(`gh api -X DELETE repos/<repo>/actions/runners/<id>/labels/<label>` /
+`gh api -X POST repos/<repo>/actions/runners/<id>/labels -f 'labels[]=<label>'`) ဖြင့်
+လည်ပတ်နေစဉ် တိုက်ရိုက် ပြောင်းလဲထားသည်။
 
 ## Janitor ကို ထည့်သွင်းခြင်း (စက်ပေါ်တွင် တစ်ကြိမ်သာ)
 
@@ -44,13 +64,39 @@ Runner ၏ ပုံသေ `KillMode=process` သည် ယူနစ်တစ်
 (`/etc/systemd/system/actions.runner.diegosouzapw-OmniRoute.<name>.service.d/10-killmode.conf`)
 ရှိသည်။ ၎င်းက listener ထံသို့ ပထမဦးစွာ SIGTERM ပို့ပြီး `TimeoutStop` ရောက်သည့်အခါ cgroup တစ်ခုလုံးထံသို့ SIGKILL ပို့သည်။ ၎င်းသည် ယူနစ်၏ နောက်တစ်ကြိမ် ပြန်လည်စတင်မှုတွင် အကျိုးသက်ရောက်မည် — **တစ်ကြိမ်လျှင် runner တစ်ခုသာ၊ idle ဖြစ်နေချိန်တွင်သာ** ပြန်လည်စတင်ပြီး idle စစ်ဆေးမှုနှင့် ပြန်လည်စတင်မှုကို command တစ်ခုတည်းအတွင်း လုပ်ဆောင်ပါ။
 
-## လည်ပတ်မှုဆိုင်ရာ စည်းမျဉ်းများ
+## လည်ပတ်မှု စည်းမျဉ်းများ
 
-- **Heavy-build အများဆုံးကန့်သတ်ချက်: တစ်ကြိမ်လျှင် ONE — label ဖြင့် မဖြစ်မနေကန့်သတ်ထားသည် (2026-08-29 မှစ၍)။** `next build` အပြည့်အစုံကို လုပ်ဆောင်သည့် job တိုင်းသည် `[self-hosted, omni-build]` ကို ပစ်မှတ်ထားပြီး **`omniroute-113-5`** တစ်ခုတည်းတွင်သာ အဆိုပါ label ရှိသည် (runners API မှတစ်ဆင့် ထည့်ထားခြင်းဖြစ်ပြီး re-registration မလုပ်ထားပါ): `ci.yml` `Build`, `npm-publish.yml` `publish`, `nightly-release-green` validation နှစ်ခုစလုံးနှင့် `docker-publish.yml` **amd64** (hosted 7 GB တွင် ဤ tree အတွက် ResourceExhausted ဖြစ်ခဲ့သည် — #11976)။ arm64 Docker အပိုင်းသည် ARM စက်မရှိသောကြောင့် webpack ဖြင့် `ubuntu-24.04-arm` ပေါ်တွင် ဆက်ရှိနေသည်။ Docker amd64 သည်လည်း webpack ကို အသုံးပြုသည်။ ဤ tree ပေါ်ရှိ Turbopack သည် 31 GB ရှိသော်လည်း BuildKit အတွင်း panic ဖြစ်ခဲ့သည် (`TurbopackInternalError: there must be a path to a root`, run 33253576569)။ သို့သော် အလားတူ tree ၏ hosted ARM ပေါ်ရှိ arm64 webpack build သည် အောင်မြင်ခဲ့သည်။ `docker-publish` amd64 သည် `ci.yml` `Build` နှင့် `heavy-build-main` concurrency group ကို မျှဝေထားသည် (`cancel-in-progress: false`)၊ ထို့ကြောင့် slot တစ်ခုတည်းပေါ်တွင် queue စောင့်သည်။ Docker Engine သည် `omniroute-113-5` ပေါ်တွင် ရှိရမည် (`docker info` သည် publish job ၏ ပထမအဆင့်ဖြစ်သည်)။ ယခင်က အများဆုံးကန့်သတ်ချက်သည် နှစ်ခုဖြစ်ခဲ့ပြီး 31 GB အတွက် မှားယွင်းခဲ့သည်။ 2026-08-29 17:26 UTC တွင် တစ်ပြိုင်နက်လည်ပတ်နေသော `next-build` နှစ်ခု (15.4 GB + 17.2 GB RSS) ကြောင့် စက်တွင် လွတ်နေသော memory သည် 5 GB သာကျန်ပြီး swap 4 GB ကို အသုံးပြုနေရသည်အထိ ဖြစ်သွားကာ kernel OOM က ၎င်းတို့ထဲမှ တစ်ခုကို kill လုပ်ခဲ့သည် — systemd က ထို kill ကို _အခြား_ runner ၏ ယူနစ်ဖြစ်သော `runsvc.sh` တွင် မှတ်တမ်းတင်ခဲ့ပြီး ထို listener ကို SIGKILL လုပ်ခဲ့သဖြင့် ၎င်းပေါ်ရှိ job သည် "The runner has received a shutdown signal" ဖြင့် ရပ်သွားခဲ့သည် (hosted-runner OOM နှင့် စာသားတူသည်)။ `omniroute-113-6` တွင် `omni-release` သာ ဆက်ထားသည်။ `main` merge များ၊ PR များနှင့် nightly မှ heavy build များသည် ယခုအခါ slot တစ်ခုတည်းပေါ်တွင် အစဉ်လိုက် လုပ်ဆောင်ကြသည်။ queue သည် ယင်းအတွက် ပေးဆပ်ရသည့် တန်ဖိုးဖြစ်သည်။ Proxmox VM တွင် RAM ပိုရလာသည့်နေ့ (48–64 GB) တွင် ဒုတိယ slot ကို ပြန်ထည့်မည်:
-  `gh api -X POST repos/<repo>/actions/runners/<id of omniroute-113-6>/labels -f 'labels[]=omni-build'`။
-- **Light pool: `omni-light` (2026-08-29, #11965)။** `omniroute-113` နှင့် `omniroute-113-2` တွင် `omni-light` ရှိပြီး backend-only `next build` (~5–6 GB) လိုအပ်သော်လည်း build အပြည့်အစုံ မလိုသော job များဖြစ်သည့် nightly Schemathesis, promptfoo, garak နှင့် axe-a11y job များအတွက် အသုံးပြုသည်။ ၎င်းတို့သည် hosted 7 GB runner ပေါ်တွင် လည်ပတ်ခဲ့ပြီး မည်သူမျှ စောင့်ကြည့်မနေချိန် `release/v3.8.51` တွင် ရပ်သွားခဲ့သည်။ စက်ပေါ်ရှိ အဆိုးဆုံးအခြေအနေမှာ heavy 2 ခု + light 2 ခု ≈ 30 + 12 GB ဖြစ်သည် — RAM 31 GB ထက်ကျော်လွန်သော်လည်း swap 16 GB အတွင်း ရှိသည်။ headroom အတွက် အမှန်တကယ်ဖြေရှင်းချက်မှာ Proxmox VM (`tomni-proxmox-113`) တွင် RAM ပိုထည့်ရန်ဖြစ်ပြီး ထိုသို့ပြုလုပ်ပါက label ကန့်သတ်ချက်များကို heavy 3 ခု + light 2 ခုအဖြစ် ပြောင်းလဲနိုင်သည်။
-- **ရည်ရွယ်ချက်ရှိရှိ listener အရေအတွက် လျှော့ထားသည်။** OmniRoute ယူနစ် လေးခုကို 2026-08-29 တွင် disable လုပ်ခဲ့သည် — စက်ကို `ci.yml` `Build` နှင့် nightly များသာ အသုံးပြုနေသဖြင့် listener 8 ခုသည် idle ဖြစ်နေပြီး ထပ်တိုး listener တစ်ခုစီသည် ဖြစ်နိုင်ခြေရှိသော 14 GB tenant တစ်ခုဖြစ်သည်။ janitor အများဆုံးကန့်သတ်ချက်မှာ 6 ဖြစ်သည် (cron ထဲရှိ `MAX_ACTIVE_RUNNERS=6`)။ ၎င်းသည် စက်ပေါ်ရှိ `Runner.Listener` တိုင်းကို ရေတွက်ပြီး OmniHeuris + OmniMind က ကျွန်ုပ်တို့၏ လေးခုအပြင် နောက်ထပ်နှစ်ခု ထပ်ပေါင်းသည်။
-- **မည်သည့် runner မဆို busy ဖြစ်နေချိန်တွင် `/tmp` သို့မဟုတ် `_work` ကို လက်ဖြင့် မည်သည့်အခါမျှ မရှင်းလင်းပါနှင့်။** စစ်ဆေးမှုနှင့် ဖျက်မှုကြားတွင် အချိန်ကွာဟချက်ရှိသည့် check-then-delete ကြောင့် 2026-08-27 တွင် လည်ပတ်နေသော Build job တစ်ခုက ၎င်း၏ `_work` ကို ဆုံးရှုံးခဲ့သည်။ janitor သည် စစ်ဆေးမှုနှင့် ဖယ်ရှားမှုကို အဆင့်တစ်ခုတည်းဖြင့် လုပ်ဆောင်သည်။ ၎င်းကိုသာ လုပ်ဆောင်ခွင့်ပြုပါ။
-- Runner တစ်ခုကို job လုပ်ဆောင်နေစဉ် အလယ်တွင် ရပ်တန့်ပါက job ကို cancel လုပ်သည် (လက်တွေ့တွင် တွေ့ရှိပြီးဖြစ်သည်)။ ၎င်း၏ listener အောက်တွင် `Runner.Worker` child မရှိသည့်အခါမှသာ `systemctl stop` ကို လုပ်ဆောင်ပါ — ထို့ပြင် command တစ်ခုတည်းဖြင့် လုပ်ဆောင်ပါ။
-- Workflow များသည် artefact များကို `/tmp` ထဲတွင် မထားရပါ (၎င်းသည် RAM ဖြစ်သည်)။ `$RUNNER_TEMP` (runner တစ်ခုစီအလိုက် disk ပေါ်တွင်ရှိသည်) သို့ download လုပ်ပါ — 1.3 GB ရှိသော `next-build` artefact ကို tmpfs ပေါ်သို့ ရောက်ရှိရန် 27–32 မိနစ်ကြာခဲ့ပြီး disk မှ upload လုပ်ရန် 2 မိနစ်သာ ကြာခဲ့သည်။
-- `.15` VPS သည် homologation အတွက်သာဖြစ်သည် — CI runner များကို မည်သည့်အခါမျှ မလည်ပတ်ပါ။
+- **တစ်ကြိမ်လျှင် Turbopack build တစ်ခုသာ — label ဖြင့် မဖြစ်မနေ ကန့်သတ်ထားသည်။** Turbopack အပြည့်အစုံဖြင့်
+  `next build` ကို run သည့် job တိုင်းသည် `[self-hosted, omni-build]` ကို target လုပ်ပြီး၊ အဆိုပါ
+  label ကို **`omniroute-113-5`** တစ်ခုတည်းကသာ ကိုင်ဆောင်ထားသည်- `ci.yml` `Build`, `npm-publish.yml` `publish`, `nightly-v4-build`, `preview-artifact`,
+  ညစဉ် a11y build (#16853) နှင့် `docker-publish.yml` **amd64** (BuildKit အတွင်းရှိ webpack —
+  ထိုနေရာတွင် Turbopack panic ဖြစ်ခဲ့သည်၊ run 33253576569)။ arm64 Docker အပိုင်းသည် `ubuntu-24.04-arm` ပေါ်တွင် ဆက်ရှိနေသည်။
+  `docker-publish` amd64 သည် `ci.yml` `Build` နှင့် `heavy-build-main` concurrency group ကို မျှဝေထားသည်
+  (`cancel-in-progress: false`)။ Docker Engine သည် `omniroute-113-5` ပေါ်တွင် ရှိရမည်။ ဒုတိယ Turbopack
+  slot သည် 78 GB အတွင်း မဆံ့ပါ (2 × 33–37 GB နှင့် စက်၏ အခြားအသုံးပြုမှုများ)။ ဒုတိယ slot သည်
+  webpack build များအတွက်သာ ဘေးကင်းသည်။
+- **Release-Green တွင် ကိုယ်ပိုင် slot ရှိသည် (2026-10-18)။** ထိုအချိန်မတိုင်မီ Release-Green validation နှစ်ခုစလုံးကို
+  `omni-build` ပေါ်တွင် run ခဲ့သည်- push တိုင်းတွင် (~10/hour၊ တစ်ရက်အတွင်း push run 100 ခုအနက် 97 ခုသည် အလုပ်တစ်ဝက်တွင်
+  ပယ်ဖျက်ခံခဲ့ရသည်) နှင့် တစ်ရက်လျှင် ~2 h ကြာသည့် full sweep သုံးကြိမ် (05:29 sweep သည် slot အတွက် 6 h စောင့်ခဲ့ရသည်) — build
+  slot တစ်ခုတည်းကို ၎င်း၏ စွမ်းဆောင်ရည်ထက် အဆများစွာ ကျော်လွန်၍ အသုံးပြုနေခဲ့ပြီး own-origin PR Build များသည် နာရီပေါင်းများစွာ စောင့်ခဲ့ရသည်။
+  ယခု `release-green` နှင့် `main-green` သည် `OMNIROUTE_USE_TURBOPACK=0` ဖြင့်
+  `omni-release` (`omniroute-113-6` တစ်ခုတည်း) ကို target လုပ်ပြီး၊ စတင်ပြီးသား run ကို push အသစ်တစ်ခုကြောင့် မပယ်ဖျက်တော့ပါ
+  (pending slot က အစုလိုက်အပြုံလိုက် ဝင်လာမှုကို ဆက်လက် ပေါင်းစည်းလျှော့ချပေးသည်)။ `tests/unit/build/runner-capacity-routing.test.ts`
+  သည် routing၊ webpack switch နှင့် `omni-release` ပေါ်ရှိ မည်သည့်အရာမျှ Turbopack ဖြင့် build မလုပ်ကြောင်းကို အတည်ပြုထားသည်။
+- **ပေါ့ပါးသော pool: `omni-light`။** `omniroute-113` နှင့် `omniroute-113-2` တို့သည် backend-only
+  `next build` (~5–6 GB; webpack) လိုအပ်သည့် ညစဉ် job များနှင့် `quality.yml` `lint-guard` ကို run သည်။ `omniroute-113`
+  တွင် 2026-10-18 အထိ `MemoryHigh=4G` ရှိခဲ့သည် — promptfoo build သည် ထိုနေရာတွင် 54 မိနစ်ကြာ memory ပြန်လည်ရယူရင်း
+  ဆက်လက်လုပ်ဆောင်ခဲ့ရသည်။ 8 GB သည် throttling ကို ဖယ်ရှားပေးသည်။
+- **Listener အရေအတွက်ကို ရည်ရွယ်ချက်ရှိရှိ လျှော့ထားသည်။** OmniRoute unit လေးခုကို 2026-08-29 တွင် ပိတ်ထားခဲ့သည် — ထပ်တိုး
+  listener တစ်ခုစီသည် အထက်ပါ memory budget ကို မျှဝေသုံးစွဲမည့် tenant တစ်ခုစီ ဖြစ်သည်။ janitor ၏ အများဆုံးကန့်သတ်ချက်မှာ 6 ဖြစ်သည် (`MAX_ACTIVE_RUNNERS=6` in cron)- ၎င်းသည်
+  စက်ပေါ်ရှိ `Runner.Listener` အားလုံးကို ရေတွက်ပြီး၊ OmniHeuris + OmniMind က ကျွန်ုပ်တို့၏ လေးခုအပြင် နောက်ထပ်နှစ်ခု ထပ်ပေါင်းသည်။
+- **မည်သည့် runner မဆို အလုပ်များနေစဉ် `/tmp` သို့မဟုတ် `_work` ကို လက်ဖြင့် မည်သည့်အခါမျှ မရှင်းလင်းပါနှင့်။**
+  စစ်ဆေးခြင်းနှင့် ဖျက်ခြင်းကြား အချိန်ကွာဟချက်ရှိသော check-then-delete ကြောင့် 2026-08-27 တွင် လုပ်ဆောင်နေဆဲ Build job တစ်ခု၏
+  `_work` ပျောက်ဆုံးခဲ့သည်။ janitor သည် စစ်ဆေးခြင်းနှင့် ဖယ်ရှားခြင်းကို အဆင့်တစ်ခုတည်းဖြင့် လုပ်ဆောင်သည်၊
+  ၎င်းကိုသာ လုပ်ဆောင်ခွင့်ပေးပါ။
+- Job လုပ်ဆောင်နေစဉ် runner ကို ရပ်တန့်ခြင်းသည် job ကို ပယ်ဖျက်သည် (တိုက်ရိုက် တွေ့ရှိထားသည်)- ၎င်း၏ listener တွင်
+  `Runner.Worker` child မရှိသည့်အခါမှသာ `systemctl stop` လုပ်ပါ — ထို့ပြင် command တစ်ခုတည်းဖြင့် လုပ်ဆောင်ပါ။
+- Workflow များသည် artefact များကို `/tmp` တွင် မသိမ်းထားရပါ (၎င်းသည် RAM ဖြစ်သည်)။ Runner တစ်ခုစီအလိုက် disk ပေါ်ရှိ
+  `$RUNNER_TEMP` သို့ download လုပ်ပါ — 1.3 GB ရှိသော `next-build` artefact ကို tmpfs ပေါ်သို့ ရောက်ရှိရန် 27–32
+  မိနစ် ကြာခဲ့ပြီး disk မှ upload လုပ်ရန် 2 မိနစ်သာ ကြာခဲ့သည်။
+- `.15` VPS သည် homologation အတွက်သာဖြစ်ပြီး — CI runner များကို မည်သည့်အခါမျှ မ run ပါ။
