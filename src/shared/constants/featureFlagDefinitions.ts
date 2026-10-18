@@ -1283,6 +1283,18 @@ export const FEATURE_FLAG_DEFINITIONS: FeatureFlagDefinition[] = [
     warningLevel: "caution",
   },
   {
+    key: "PROVIDER_SAFETY_STOPS_TERMINAL",
+    label: "Provider Safety Stops: Terminal",
+    description:
+      "Keep an explicit provider safety stop (misalignment_policy_violation, content_policy_violation, or the exact legacy 'blocked by our safety systems' rejection labelled provider_safety_rejection) as a terminal, request-scoped refusal: its code is preserved through HTTP, Responses, WebSocket and completed-stream errors, and a combo stops at it instead of retrying other targets, cancelling admitted siblings (#17049). Off by default: these errors keep their existing handling and combo routing is unchanged.",
+    descriptionI18nKey: "featureFlagProviderSafetyStopsTerminalDescription",
+    category: "runtime",
+    defaultValue: "false",
+    type: "boolean",
+    requiresRestart: false,
+    warningLevel: "caution",
+  },
+  {
     key: "CREDENTIAL_HEALTH_RETEST_AUTO_DISABLED",
     label: "Credential Health: Retest Auto-Disabled Connections",
     description:

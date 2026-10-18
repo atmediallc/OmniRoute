@@ -658,7 +658,11 @@
       "tests/unit/provider-alias-combo-pool-12844.test.ts",
       "tests/unit/model-capacity-failure-scope-15788.test.ts",
       "tests/unit/opencode-free-synced-catalog-and-no-connection-15540.test.ts",
-      "tests/unit/provider-node-local-dispatch-13452.test.ts"
+      "tests/unit/provider-node-local-dispatch-13452.test.ts",
+      "tests/unit/content-policy-refusal.test.ts",
+      "tests/unit/stream-timing-late-output.test.ts",
+      "tests/unit/chat-empty-stream-recovery.test.ts",
+      "tests/unit/provider-error-rules-opt-in-flags-16797.test.ts"
     ],
     "nodeArgs": [
       "--import",
