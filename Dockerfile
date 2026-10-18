@@ -34,7 +34,7 @@ RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-apt-cache,targe
   && if [ -n "${NPM_REGISTRY}" ]; then npm config set registry "${NPM_REGISTRY}"; fi \
   && apt-get update \
   && apt-get upgrade -y \
-  && apt-get install -y --no-install-recommends libsecret-1-0 ca-certificates git openssh-client \
+  && apt-get install -y --no-install-recommends libsecret-1-0 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 # npm's *bundled* node_modules (brace-expansion, ip-address, tar, undici) are
@@ -78,38 +78,6 @@ RUN set -eux; \
   node -e "for (const p of ['brace-expansion','ip-address','postcss-selector-parser','tar','undici']) console.log(p, require('/usr/local/lib/node_modules/npm/node_modules/'+p+'/package.json').version);"; \
   npm --version; \
   npm cache clean --force
-
-# ── Global AI CLI tools (all Node-based image variants) ───────────────────────
-# Install into /usr/local once, in the common base. runner-base, runner-web,
-# and runner-cli inherit these binaries, including when running as USER node.
-# Exact versions preserve reproducibility; the build fails if a binary is absent.
-# simple-git in bundled CLI tools is patched to >=4.0.1 to clear CVE-2026-102828
-# and CVE-2026-102829 in container vulnerability scans.
-RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,target=/root/.npm \
-  npm install -g --no-audit --no-fund \
-    @openai/codex@0.159.2 \
-    @anthropic-ai/claude-code@2.1.260 \
-    droid@0.212.0 \
-    openclaw@2026.9.1 \
-    @qoder-ai/qodercli@1.1.63 \
-    cline@3.0.73 \
-  && for tool in codex claude droid openclaw qodercli cline; do \
-       command -v "$tool" || exit 1; \
-     done \
-  && cline --version \
-  && npm install --prefix /tmp/cli-cve-patch --no-audit --no-fund --ignore-scripts \
-       simple-git@4.0.1 @simple-git/argv-parser@2.0.1 \
-  && find /usr/local/lib/node_modules -type d -name "simple-git" | while read -r dir; do \
-       rm -rf "$dir" && cp -R /tmp/cli-cve-patch/node_modules/simple-git "$dir"; \
-     done \
-  && find /usr/local/lib/node_modules -type d -name "argv-parser" | while read -r dir; do \
-       rm -rf "$dir" && cp -R /tmp/cli-cve-patch/node_modules/@simple-git/argv-parser "$dir"; \
-     done \
-  && rm -rf /tmp/cli-cve-patch \
-  && npm cache clean --force
-
-# Global npm binaries live here; preserve visibility under both root and node.
-ENV PATH="/usr/local/bin:${PATH}"
 
 # ── Builder ────────────────────────────────────────────────────────────────
 FROM base AS builder
@@ -394,8 +362,9 @@ USER node
 
 FROM runner-base AS runner-cli
 
-# Drop back to root for the extra Docker tools, then return to the
-# non-root `node` user inherited from runner-base.
+# Drop back to root briefly so we can install system + global npm packages,
+# then return to the `node` non-root user before the CMD inherited from
+# runner-base runs.
 USER root
 
 # The CLI image can use the internal ChatGPT Web (Codex) Chromium sidecar over
@@ -403,18 +372,32 @@ USER root
 COPY --from=builder /app/node_modules/playwright-core ./node_modules/playwright-core
 COPY --from=builder /app/node_modules/playwright ./node_modules/playwright
 
-# Extra Docker tooling for the CLI variant (git/SSH are in the common base).
+# Install system dependencies required by openclaw (git+ssh references).
 RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-apt-cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-apt-lists,target=/var/lib/apt/lists,sharing=locked \
   apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates docker.io docker-compose \
+  && apt-get install -y --no-install-recommends git ca-certificates docker.io docker-compose \
   && rm -rf /var/lib/apt/lists/* \
   && git config --system url."https://github.com/".insteadOf "ssh://git@github.com/"
 
-# CLI binaries are already installed globally by the common base stage.
-# Keep this dedicated variant for Docker tooling and the Playwright sidecar.
-RUN for tool in codex claude droid openclaw qodercli cline; do \
-      command -v "$tool" || exit 1; \
-    done
+# Install CLI tools globally. Separate layer from apt for better cache reuse.
+# Pinned to exact versions per Diego's diagnosis in #12576 — floating
+# `@latest` causes two CI failures:
+#   1. `openclaw` ships a breaking major ~weekly; overnight builds silently
+#      advance to a version that no longer matches the tested combo stack.
+#   2. `codex` / `claude-code` dev pre-releases (`@next`, dist-tags) mutate
+#      API surface without notice; reproducible builds need a SHA-pinned dev
+#      build, not the floating `@latest`.
+# `@qoder-ai/qodercli` (#9292): the Qoder PAT (`pt-*`) login path shells out to
+# this binary for WASM-signed Cosy auth; without it the executor's own
+# `cli_not_found` handling is correct but every PAT login fails with
+# `spawn qodercli ENOENT`. Same pinning rationale as the tools above.
+RUN --mount=type=cache,id=s/92ca8a61-c1ba-421f-a389-d48ac7258c2d-npm-cache,target=/root/.npm \
+  npm install -g --no-audit --no-fund \
+    @openai/codex@0.159.2 \
+    @anthropic-ai/claude-code@2.1.260 \
+    droid@0.212.0 \
+    openclaw@2026.9.1 \
+    @qoder-ai/qodercli@1.1.63
 
 USER node
