@@ -1,0 +1,416 @@
+name: Publish OmniRoute Bun Images
+
+on:
+  push:
+    branches:
+      - main
+      - "release/v*"
+    tags:
+      - "v*"
+    paths-ignore:
+      - ".github/workflows/**"
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "next, main, or a release version (e.g. 3.8.52)"
+        required: true
+        default: next
+        type: string
+      promote_latest:
+        description: "Also promote stable version to latest-bun / latest-web-bun"
+        required: false
+        default: false
+        type: boolean
+
+# Independent from docker-publish.yml, which builds the Node.js images.
+concurrency:
+  group: docker-bun-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Resolve Bun release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      promote_latest: ${{ steps.resolve.outputs.promote_latest }}
+      skip: ${{ steps.resolve.outputs.skip }}
+    steps:
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.version == 'next' && github.ref || inputs.version == 'main' && 'refs/heads/main' || format('refs/tags/v{0}', inputs.version)) || '' }}
+
+      - name: Resolve tags and promotion rules
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_VERSION: ${{ inputs.version }}
+          PROMOTE_INPUT: ${{ inputs.promote_latest }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          VERSION=$(bash scripts/ci/resolve-docker-publish-version.sh \
+            "$EVENT_NAME" "$REF_TYPE" "$REF_NAME" "$INPUT_VERSION" "$DEFAULT_BRANCH")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [[ "$VERSION" == skip ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "promote_latest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Never skip a Bun build just because the Node.js version tag exists.
+          # Rebuilding these tags is deliberate; no floating/latest promotion for
+          # main or next, and no promotion of pre-release versions.
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          PROMOTE=false
+          if [[ "$VERSION" != main && "$VERSION" != next ]] && \
+             ! [[ "$VERSION" =~ -(rc|alpha|beta|pre|next) ]]; then
+            CANDIDATE=$(git tag -l 'v[0-9]*' | \
+              bash scripts/ci/should-promote-latest.sh "$VERSION")
+            if [[ "$CANDIDATE" == true ]]; then
+              if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+                if [[ "${PROMOTE_INPUT:-false}" == true ]]; then
+                  PROMOTE=true
+                fi
+              else
+                PROMOTE=true
+              fi
+            fi
+          fi
+          echo "promote_latest=$PROMOTE" >> "$GITHUB_OUTPUT"
+          echo "Bun version tag: $VERSION (promote_latest=$PROMOTE)"
+          echo "Commit: $(git rev-parse HEAD)"
+          test -f Dockerfile.bun
+
+  build:
+    name: Build and push Bun (${{ matrix.platform }})
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    # Preserve repository's self-hosted high-memory AMD64 runner option.
+    runs-on: ${{ matrix.arch == 'amd64' && (vars.USE_VPS_RUNNER == 'true' && fromJSON('["self-hosted","omni-build"]') || 'ubuntu-24.04') || 'ubuntu-24.04-arm' }}
+    # Serialize AMD64 with the existing heavyweight Node.js build on omni-build;
+    # keep ARM independent from Node.js workflow cancellation groups.
+    concurrency:
+      group: ${{ matrix.arch == 'amd64' && 'heavy-build-main' || format('docker-bun-arm-{0}', github.ref) }}
+      cancel-in-progress: false
+    timeout-minutes: 350
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+    env:
+      IMAGE_NAME: angelitoflow/omniroute
+      GHCR_IMAGE_NAME: ghcr.io/atmediallc/omniroute
+    steps:
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.version == 'next' && github.ref || inputs.version == 'main' && 'refs/heads/main' || format('refs/tags/v{0}', inputs.version)) || '' }}
+
+      - name: Verify build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Commit: $(git rev-parse HEAD)"
+          echo "Platform: ${{ matrix.platform }}"
+          docker info --format 'CPU={{.NCPU}} MEM={{.MemTotal}}'
+          test -f Dockerfile.bun
+          test -f bun.lock
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both targets use one cache scope PER architecture so runner-web can
+      # reuse the successful runner-base compilation instead of rebuilding it.
+      # Both builds are REQUIRED. There is no continue-on-error.
+      - name: Build and push Bun base by digest
+        id: bun-base
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.bun
+          target: runner-base
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            OMNIROUTE_USE_TURBOPACK=0
+            OMNIROUTE_BUILD_MEMORY_MB=12288
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          tags: |
+            ${{ env.IMAGE_NAME }}
+            ${{ env.GHCR_IMAGE_NAME }}
+          cache-from: type=gha,scope=omniroute-bun-${{ matrix.arch }}
+          cache-to: type=gha,scope=omniroute-bun-${{ matrix.arch }},mode=max,ignore-error=true
+
+      - name: Build and push Bun web by digest
+        id: bun-web
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.bun
+          target: runner-web
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            OMNIROUTE_USE_TURBOPACK=0
+            OMNIROUTE_BUILD_MEMORY_MB=12288
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          tags: |
+            ${{ env.IMAGE_NAME }}
+            ${{ env.GHCR_IMAGE_NAME }}
+          cache-from: type=gha,scope=omniroute-bun-${{ matrix.arch }}
+          cache-to: type=gha,scope=omniroute-bun-${{ matrix.arch }},mode=max,ignore-error=true
+
+      - name: Export Bun digests
+        shell: bash
+        env:
+          BASE_DIGEST: ${{ steps.bun-base.outputs.digest }}
+          WEB_DIGEST: ${{ steps.bun-web.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for entry in "bun-base:$BASE_DIGEST" "bun-web:$WEB_DIGEST"; do
+            variant=${entry%%:*}
+            digest=${entry#*:}
+            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Missing or invalid ${variant} digest: ${digest}"
+              exit 1
+            fi
+            mkdir -p "$RUNNER_TEMP/bun-digests/$variant"
+            touch "$RUNNER_TEMP/bun-digests/$variant/${digest#sha256:}"
+            echo "$variant (${{ matrix.arch }}): $digest"
+          done
+
+      - name: Upload Bun base digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-bun-base-${{ matrix.arch }}
+          path: ${{ runner.temp }}/bun-digests/bun-base/*
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Upload Bun web digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-bun-web-${{ matrix.arch }}
+          path: ${{ runner.temp }}/bun-digests/bun-web/*
+          if-no-files-found: error
+          retention-days: 2
+
+  publish:
+    name: Publish Bun multi-arch tags
+    needs: [prepare, build]
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    env:
+      IMAGE_NAME: angelitoflow/omniroute
+      GHCR_IMAGE_NAME: ghcr.io/atmediallc/omniroute
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Checkout selected source ref
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.version == 'next' && github.ref || inputs.version == 'main' && 'refs/heads/main' || format('refs/tags/v{0}', inputs.version)) || '' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Bun base digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: digests-bun-base-*
+          path: ${{ runner.temp }}/bun-digests/bun-base
+
+      - name: Download Bun web digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: digests-bun-web-*
+          path: ${{ runner.temp }}/bun-digests/bun-web
+
+      - name: Verify both architecture digests
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in bun-base bun-web; do
+            for arch in amd64 arm64; do
+              dir="$RUNNER_TEMP/bun-digests/$variant/digests-$variant-$arch"
+              if [[ ! -d "$dir" ]]; then
+                echo "::error::No ${variant} artifact for ${arch}"
+                exit 1
+              fi
+              mapfile -t names < <(find "$dir" -maxdepth 1 -type f -printf '%f\n')
+              if [[ "${#names[@]}" -ne 1 ]] || ! [[ "${names[0]}" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "::error::Invalid or missing ${variant}/${arch} digest artifact"
+                exit 1
+              fi
+              echo "${variant//-/_}_${arch}=sha256:${names[0]}" >> "$GITHUB_OUTPUT"
+            done
+          done
+
+      - name: Publish Docker Hub Bun manifests
+        shell: bash
+        env:
+          BASE_AMD64: ${{ steps.verify.outputs.bun_base_amd64 }}
+          BASE_ARM64: ${{ steps.verify.outputs.bun_base_arm64 }}
+          WEB_AMD64: ${{ steps.verify.outputs.bun_web_amd64 }}
+          WEB_ARM64: ${{ steps.verify.outputs.bun_web_arm64 }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "${IMAGE_NAME}:${VERSION}-bun" \
+            "${IMAGE_NAME}@${BASE_AMD64}" "${IMAGE_NAME}@${BASE_ARM64}"
+          docker buildx imagetools create -t "${IMAGE_NAME}:${VERSION}-web-bun" \
+            "${IMAGE_NAME}@${WEB_AMD64}" "${IMAGE_NAME}@${WEB_ARM64}"
+
+      - name: Publish GHCR Bun manifests
+        shell: bash
+        env:
+          BASE_AMD64: ${{ steps.verify.outputs.bun_base_amd64 }}
+          BASE_ARM64: ${{ steps.verify.outputs.bun_base_arm64 }}
+          WEB_AMD64: ${{ steps.verify.outputs.bun_web_amd64 }}
+          WEB_ARM64: ${{ steps.verify.outputs.bun_web_arm64 }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "${GHCR_IMAGE_NAME}:${VERSION}-bun" \
+            "${GHCR_IMAGE_NAME}@${BASE_AMD64}" "${GHCR_IMAGE_NAME}@${BASE_ARM64}"
+          docker buildx imagetools create -t "${GHCR_IMAGE_NAME}:${VERSION}-web-bun" \
+            "${GHCR_IMAGE_NAME}@${WEB_AMD64}" "${GHCR_IMAGE_NAME}@${WEB_ARM64}"
+
+      - name: Verify published multi-arch manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in "$IMAGE_NAME" "$GHCR_IMAGE_NAME"; do
+            for suffix in -bun -web-bun; do
+              ref="${image}:${VERSION}${suffix}"
+              echo "Verifying $ref"
+              docker buildx imagetools inspect --raw "$ref" | jq -e '
+                ([.manifests[] | select(.platform.os == "linux") | .platform.architecture] | unique | sort)
+                == ["amd64", "arm64"]' >/dev/null
+              docker buildx imagetools inspect "$ref"
+            done
+          done
+
+      - name: Smoke-test published Bun images (AMD64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for suffix in -bun -web-bun; do
+            ref="${IMAGE_NAME}:${VERSION}${suffix}"
+            name="omniroute-bun-smoke-$RANDOM"
+            echo "Testing $ref"
+            docker run --platform linux/amd64 -d --name "$name" "$ref" >/dev/null
+            healthy=false
+            for attempt in $(seq 1 45); do
+              state=$(docker inspect -f '{{.State.Status}}' "$name")
+              health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$name")
+              if [[ "$health" == healthy ]]; then healthy=true; break; fi
+              if [[ "$state" == exited || "$health" == unhealthy ]]; then break; fi
+              sleep 3
+            done
+            if [[ "$healthy" != true ]]; then
+              docker logs --tail 100 "$name" || true
+              docker rm -f "$name" >/dev/null || true
+              echo "::error::Smoke test failed: $ref"
+              exit 1
+            fi
+            docker rm -f "$name" >/dev/null
+          done
+
+      - name: Trivy CRITICAL gate (Bun base)
+        if: needs.prepare.outputs.version != 'main'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.GHCR_IMAGE_NAME }}:${{ env.VERSION }}-bun
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+      - name: Trivy CRITICAL gate (Bun web)
+        if: needs.prepare.outputs.version != 'main'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.GHCR_IMAGE_NAME }}:${{ env.VERSION }}-web-bun
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+      - name: Promote Bun latest tags
+        if: needs.prepare.outputs.promote_latest == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in "$IMAGE_NAME" "$GHCR_IMAGE_NAME"; do
+            docker buildx imagetools create \
+              -t "${image}:latest-bun" "${image}:${VERSION}-bun"
+            docker buildx imagetools create \
+              -t "${image}:latest-web-bun" "${image}:${VERSION}-web-bun"
+          done
+
+      - name: Publication summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## OmniRoute Bun publication'
+            echo
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+            echo "- Intended Docker Hub tags: \`${IMAGE_NAME}:${VERSION}-bun\`, \`${IMAGE_NAME}:${VERSION}-web-bun\`"
+            echo "- Intended GHCR tags: \`${GHCR_IMAGE_NAME}:${VERSION}-bun\`, \`${GHCR_IMAGE_NAME}:${VERSION}-web-bun\`"
+            echo '- Required architectures: linux/amd64, linux/arm64'
+            echo '- No Node.js images are built or tagged by this workflow.'
+            echo '- Publication is only certified when all jobs complete successfully.'
+          } >> "$GITHUB_STEP_SUMMARY"
