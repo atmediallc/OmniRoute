@@ -178,25 +178,17 @@ jobs:
           )
           config_path.write_text(config)
 
-          # Debian Trixie packages confirmed unavailable in the prior Bun web logs.
+          # Dockerfile.bun already uses the corrected Debian Trixie
+          # package names. Do not mutate it or assume an obsolete layout.
           dockerfile_path = Path("Dockerfile.bun")
-          lines = dockerfile_path.read_text().splitlines(keepends=True)
-          changed = {"gconf-service": 0, "stdc++6": 0, "fonts-kacst": 0}
-          patched = []
-          for line in lines:
-              parts = line.strip().split()
-              package = parts[0] if parts else ""
-              if package in ("gconf-service", "fonts-kacst"):
-                  changed[package] += 1
-                  continue
-              if package == "stdc++6":
-                  changed[package] += 1
-                  line = line.replace("stdc++6", "libstdc++6", 1)
-              patched.append(line)
-          if any(count != 1 for count in changed.values()):
-              raise SystemExit(f"Unexpected Dockerfile package layout: {changed}")
-          dockerfile_path.write_text("".join(patched))
-          print("Bun-only build compatibility applied:", changed)
+          dockerfile = dockerfile_path.read_text()
+          if "libstdc++6" not in dockerfile:
+              raise SystemExit("Dockerfile.bun must contain libstdc++6")
+          import re
+          legacy = re.findall(r"(?m)^\s*(?:gconf-service|stdc\+\+6|fonts-kacst)\s*\\?\s*$", dockerfile)
+          if legacy:
+              raise SystemExit(f"Legacy Debian packages still present: {legacy}")
+          print("Bun Dockerfile compatibility: already current (no changes needed)")
           PY
           git diff --check
           git diff --stat
