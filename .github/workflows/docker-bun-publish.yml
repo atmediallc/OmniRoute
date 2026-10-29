@@ -7,8 +7,12 @@ on:
       - "release/v*"
     tags:
       - "v*"
-    paths-ignore:
-      - ".github/workflows/**"
+    # Rebuild for changes to this Bun workflow, but not unrelated workflow files.
+    # Ordered patterns keep normal source pushes eligible and exclude unrelated CI edits.
+    paths:
+      - "**"
+      - "!.github/workflows/**"
+      - ".github/workflows/docker-bun-publish.yml"
   release:
     types: [released]
   workflow_dispatch:
@@ -189,6 +193,47 @@ jobs:
           if legacy:
               raise SystemExit(f"Legacy Debian packages still present: {legacy}")
           print("Bun Dockerfile compatibility: already current (no changes needed)")
+          PY
+          git diff --check
+          git diff --stat
+
+      # The Cursor catalog is reachable from ProviderDetailPageClient; its flag
+      # helper must not pull SQLite, sharp or ioredis into the browser bundle.
+      # This compatibility adjustment exists ONLY in the disposable Bun checkout.
+      # Application sources committed to this repository remain untouched.
+      - name: Isolate Bun client catalog from server-only flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("open-sse/utils/cursorAgentProtobuf/grok47MaxEffort.ts")
+          bridge = Path("src/shared/utils/featureFlagResolverBridge.ts")
+          if not path.is_file() or not bridge.is_file():
+              raise SystemExit("Cursor flag helper or client-safe resolver bridge missing")
+
+          old_import = 'import { isFeatureFlagEnabled } from "@/shared/utils/featureFlags";'
+          new_import = 'import { resolveRegisteredFeatureFlag } from "@/shared/utils/featureFlagResolverBridge";'
+          old_call = 'return isFeatureFlagEnabled(CURSOR_GROK_47_DROP_MAX_EFFORT_FLAG);'
+          new_call = 'return resolveRegisteredFeatureFlag(CURSOR_GROK_47_DROP_MAX_EFFORT_FLAG);'
+
+          source = path.read_text()
+          bridge_source = bridge.read_text()
+          if "export function resolveRegisteredFeatureFlag(" not in bridge_source:
+              raise SystemExit("Missing expected registered feature flag resolver")
+
+          if source.count(old_import) == 1 and source.count(old_call) == 1:
+              source = source.replace(old_import, new_import).replace(old_call, new_call)
+              path.write_text(source)
+              print("Bun checkout: Cursor flag helper now uses client-safe resolver")
+          elif source.count(new_import) == 1 and source.count(new_call) == 1 and old_import not in source and old_call not in source:
+              print("Bun checkout: Cursor flag helper is already client-safe")
+          else:
+              raise SystemExit("Unexpected Cursor flag helper; refusing unverified Bun patch")
+
+          if old_import in path.read_text() or old_call in path.read_text():
+              raise SystemExit("Server-only Cursor feature flag import remains")
           PY
           git diff --check
           git diff --stat
