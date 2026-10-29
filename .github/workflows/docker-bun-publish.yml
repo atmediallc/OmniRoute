@@ -193,26 +193,28 @@ jobs:
           git diff --check
           git diff --stat
 
-      # Detect invalid Fumadocs metadata before expensive per-architecture Docker builds.
-      # Fumadocs requires a string title in each compiled provider document.
+      # Fail early when Fumadocs documentation metadata would break the build.
       - name: Validate provider documentation frontmatter
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import re
           import sys
 
           errors = []
-          for path in sorted(Path("docs/providers").glob("**/*.md")):
-              text = path.read_text(encoding="utf-8-sig")
-              match = re.match(r"\\A---[ \\t]*\\r?\\n(.*?)\\r?\\n---[ \\t]*(?:\\r?\\n|\\Z)", text, re.S)
-              if not match:
+          for path in sorted(Path("docs/providers").rglob("*.md")):
+              lines = path.read_text(encoding="utf-8-sig").splitlines()
+              if not lines or lines[0].strip() != "---":
                   errors.append(f"{path}: missing YAML frontmatter")
                   continue
-              titles = re.findall(r'(?m)^title:[ \\t]*(.*)$', match.group(1))
-              if len(titles) != 1 or not titles[0].strip() or titles[0].strip() in ('null', '~', "''", '""'):
+              try:
+                  close = next(i for i, line in enumerate(lines[1:], 1) if line.strip() == "---")
+              except StopIteration:
+                  errors.append(f"{path}: unterminated YAML frontmatter")
+                  continue
+              titles = [line.split(":", 1)[1].strip() for line in lines[1:close] if line.startswith("title:")]
+              if len(titles) != 1 or titles[0] in ("", "null", "~", "''", '""'):
                   errors.append(f"{path}: expected a non-empty title")
           if errors:
               for error in errors:
