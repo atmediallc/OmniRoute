@@ -193,6 +193,34 @@ jobs:
           git diff --check
           git diff --stat
 
+      # Detect invalid Fumadocs metadata before expensive per-architecture Docker builds.
+      # Fumadocs requires a string title in each compiled provider document.
+      - name: Validate provider documentation frontmatter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          errors = []
+          for path in sorted(Path("docs/providers").glob("**/*.md")):
+              text = path.read_text(encoding="utf-8-sig")
+              match = re.match(r"\\A---[ \\t]*\\r?\\n(.*?)\\r?\\n---[ \\t]*(?:\\r?\\n|\\Z)", text, re.S)
+              if not match:
+                  errors.append(f"{path}: missing YAML frontmatter")
+                  continue
+              titles = re.findall(r'(?m)^title:[ \\t]*(.*)$', match.group(1))
+              if len(titles) != 1 or not titles[0].strip() or titles[0].strip() in ('null', '~', "''", '""'):
+                  errors.append(f"{path}: expected a non-empty title")
+          if errors:
+              for error in errors:
+                  print(f"::error::{error}")
+              sys.exit(1)
+          print("Provider documentation frontmatter: OK")
+          PY
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
