@@ -197,40 +197,58 @@ jobs:
           git diff --check
           git diff --stat
 
-      # The Cursor catalog is reachable from ProviderDetailPageClient; its flag
-      # helper must not pull SQLite, sharp or ioredis into the browser bundle.
-      # This compatibility adjustment exists ONLY in the disposable Bun checkout.
-      # Application sources committed to this repository remain untouched.
-      - name: Isolate Bun client catalog from server-only flags
+      # Older tags imported DB-backed feature flags into a browser bundle.
+      # Current upstream uses the dependency-free registered resolver already.
+      # Validate either known-safe shape; patch only an older checkout, never
+      # committed application source files.
+      - name: Verify Bun client catalog feature flag isolation
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path("open-sse/utils/cursorAgentProtobuf/grok47MaxEffort.ts")
           bridge = Path("src/shared/utils/featureFlagResolverBridge.ts")
-          if not path.is_file() or not bridge.is_file():
-              raise SystemExit("Cursor flag helper or client-safe resolver bridge missing")
+          registered = Path("open-sse/utils/registeredFeatureFlag.ts")
+          if not path.is_file():
+              raise SystemExit("Cursor flag helper missing")
 
           old_import = 'import { isFeatureFlagEnabled } from "@/shared/utils/featureFlags";'
-          new_import = 'import { resolveRegisteredFeatureFlag } from "@/shared/utils/featureFlagResolverBridge";'
           old_call = 'return isFeatureFlagEnabled(CURSOR_GROK_47_DROP_MAX_EFFORT_FLAG);'
+          new_import = 'import { resolveRegisteredFeatureFlag } from "@/shared/utils/featureFlagResolverBridge";'
           new_call = 'return resolveRegisteredFeatureFlag(CURSOR_GROK_47_DROP_MAX_EFFORT_FLAG);'
+          registered_import = 'import { isRegisteredFeatureFlagEnabled } from "../registeredFeatureFlag.ts";'
+          registered_call = 'return isRegisteredFeatureFlagEnabled(CURSOR_GROK_47_DROP_MAX_EFFORT_FLAG);'
 
           source = path.read_text()
-          bridge_source = bridge.read_text()
-          if "export function resolveRegisteredFeatureFlag(" not in bridge_source:
-              raise SystemExit("Missing expected registered feature flag resolver")
-
-          if source.count(old_import) == 1 and source.count(old_call) == 1:
+          if source.count(registered_import) == 1 and source.count(registered_call) == 1:
+              if not registered.is_file():
+                  raise SystemExit("Registered feature flag resolver missing")
+              registered_source = registered.read_text()
+              if "export function isRegisteredFeatureFlagEnabled(" not in registered_source:
+                  raise SystemExit("Unexpected registered resolver implementation")
+              # Keep the client-safe entry point free of DB-backed imports.
+              if re.search(r'(?m)^\s*import\s', registered_source):
+                  raise SystemExit("Registered resolver gained imports; review Bun client safety")
+              if any(token in source for token in (old_import, old_call, new_import, new_call)):
+                  raise SystemExit("Mixed Cursor flag resolvers; refusing Bun build")
+              print("Bun checkout: current upstream registered resolver is client-safe")
+          elif source.count(old_import) == 1 and source.count(old_call) == 1:
+              if not bridge.is_file() or "export function resolveRegisteredFeatureFlag(" not in bridge.read_text():
+                  raise SystemExit("Missing expected client-safe resolver bridge")
               source = source.replace(old_import, new_import).replace(old_call, new_call)
               path.write_text(source)
-              print("Bun checkout: Cursor flag helper now uses client-safe resolver")
-          elif source.count(new_import) == 1 and source.count(new_call) == 1 and old_import not in source and old_call not in source:
-              print("Bun checkout: Cursor flag helper is already client-safe")
+              print("Bun checkout: legacy Cursor helper patched to client-safe bridge")
+          elif source.count(new_import) == 1 and source.count(new_call) == 1:
+              if not bridge.is_file() or "export function resolveRegisteredFeatureFlag(" not in bridge.read_text():
+                  raise SystemExit("Missing expected client-safe resolver bridge")
+              if old_import in source or old_call in source:
+                  raise SystemExit("Mixed Cursor flag resolvers; refusing Bun build")
+              print("Bun checkout: legacy client-safe bridge already present")
           else:
-              raise SystemExit("Unexpected Cursor flag helper; refusing unverified Bun patch")
+              raise SystemExit("Unexpected Cursor flag helper; refusing unverified Bun build")
 
           if old_import in path.read_text() or old_call in path.read_text():
               raise SystemExit("Server-only Cursor feature flag import remains")
