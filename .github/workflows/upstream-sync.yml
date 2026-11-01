@@ -1,0 +1,133 @@
+name: Upstream Sync (PR Only)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 11 * * 1' # Monday 11:17 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Open or update upstream sync PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPO: cheaper-inference/OmniRoute
+      TARGET_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Check out fork with full history (blobless)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: true
+
+      - name: Safely merge upstream and open or update PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          SOURCE_BRANCH="$(gh api "repos/$UPSTREAM_REPO" --jq .default_branch)"
+          if [[ -z "$SOURCE_BRANCH" || "$SOURCE_BRANCH" != "$TARGET_BRANCH" ]]; then
+            echo "::error::Upstream default ($SOURCE_BRANCH) differs from fork default ($TARGET_BRANCH). Review release branch changes manually."
+            exit 1
+          fi
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --filter=blob:none --no-tags origin \
+            "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
+          git fetch --filter=blob:none --no-tags upstream \
+            "+refs/heads/${SOURCE_BRANCH}:refs/remotes/upstream/${SOURCE_BRANCH}"
+          BASE="refs/remotes/origin/${TARGET_BRANCH}"
+          UPSTREAM="refs/remotes/upstream/${SOURCE_BRANCH}"
+          BASE_SHA="$(git rev-parse "$BASE")"
+          UPSTREAM_SHA="$(git rev-parse "$UPSTREAM")"
+
+          if git merge-base --is-ancestor "$UPSTREAM" "$BASE"; then
+            echo 'Already synchronized with the upstream default branch.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          PR_ROWS="$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --base "$TARGET_BRANCH" --state open --limit 100 \
+            --json number,headRefName,headRepositoryOwner \
+            --jq '.[] | select(.headRefName | startswith("sync/upstream-")) | select(.headRepositoryOwner.login == env.GITHUB_REPOSITORY_OWNER) | "\(.number)\t\(.headRefName)"')"
+          if [[ "$(printf '%s\n' "$PR_ROWS" | grep -c . || true)" -gt 1 ]]; then
+            echo '::error::Multiple sync PRs found. Please resolve them manually.'
+            exit 1
+          fi
+
+          PR_NUMBER=''
+          if [[ -n "$PR_ROWS" ]]; then
+            PR_NUMBER="${PR_ROWS%%$'\t'*}"
+            SYNC_BRANCH="${PR_ROWS#*$'\t'}"
+            git fetch --filter=blob:none --no-tags origin \
+              "+refs/heads/${SYNC_BRANCH}:refs/remotes/origin/${SYNC_BRANCH}"
+            git switch -c "$SYNC_BRANCH" "refs/remotes/origin/${SYNC_BRANCH}"
+          else
+            SYNC_BRANCH="sync/upstream-${GITHUB_RUN_ID}"
+            git switch -c "$SYNC_BRANCH" "$BASE"
+          fi
+
+          for REF in "$BASE" "$UPSTREAM"; do
+            if ! git merge --no-ff --no-edit "$REF"; then
+              echo "::error::Merge conflict with $REF. Nothing was pushed; manual resolution required."
+              git status --short
+              exit 1
+            fi
+          done
+
+          # Preserve the two custom Docker/Bun workflows, byte for byte.
+          for FILE in \
+            .github/workflows/docker-bun-publish.yml \
+            .github/workflows/docker-2-publish.yml; do
+            BEFORE="$(git rev-parse "${BASE}:${FILE}")"
+            AFTER="$(git rev-parse "HEAD:${FILE}")"
+            if [[ "$BEFORE" != "$AFTER" ]]; then
+              echo "::error::Custom workflow changed: $FILE. Nothing pushed."
+              exit 1
+            fi
+          done
+
+          if git diff --quiet "$BASE" HEAD; then
+            echo 'No file changes to propose.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [[ -n "$PR_NUMBER" ]] && git diff --quiet "refs/remotes/origin/${SYNC_BRANCH}" HEAD; then
+            echo "PR #$PR_NUMBER already contains these upstream changes." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git push origin "HEAD:refs/heads/${SYNC_BRANCH}"
+
+          if [[ -n "$PR_NUMBER" ]]; then
+            echo "Updated PR #$PR_NUMBER without rewriting history." >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' \
+              '## Automated upstream synchronization' \
+              '' \
+              "Upstream: $UPSTREAM_REPO ($UPSTREAM_SHA)" \
+              "Target: $TARGET_BRANCH ($BASE_SHA)" \
+              '' \
+              '- Histories merged; no reset or force push.' \
+              '- Fork-owned Docker/Bun workflows verified unchanged.' \
+              '- Review changes, required tests, and migrations before merging.' \
+              '- Manual merge only; this workflow never publishes images.' \
+              > "$RUNNER_TEMP/upstream-sync-pr.md"
+            gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" \
+              --title 'chore(sync): integrate newer OmniRoute upstream commits' \
+              --body-file "$RUNNER_TEMP/upstream-sync-pr.md"
+            echo "Created upstream sync PR: $SYNC_BRANCH" >> "$GITHUB_STEP_SUMMARY"
+          fi
