@@ -76,7 +76,31 @@ RUN apt-get update \
      ca-certificates \
      curl \
      sqlite3 \
+     git \
+     libstdc++6 \
   && rm -rf /var/lib/apt/lists/*
+
+# Embedded OpenCode Server: verified upstream native binary, shared by both
+# Bun runtime targets. Use the baseline x64 build for older AMD64 CPUs.
+# Keep the version and both upstream release asset checksums in sync.
+RUN set -eu; \
+    version=1.19.6; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) asset=opencode-linux-x64-baseline.tar.gz; checksum=8443113b3f3dfebf8b0fa91c4377e5519a62b9231732d9344a5df001e4a852b3 ;; \
+      arm64) asset=opencode-linux-arm64.tar.gz; checksum=5b68c1f4c5e75b4134e664cc8f36d634d64208d4fcfe5bcf3b48bab699c2dbac ;; \
+      *) echo "Unsupported OpenCode architecture" >&2; exit 1 ;; \
+    esac; \
+    tmp="$(mktemp -d)"; \
+    trap 'rm -rf "$tmp"' EXIT; \
+    curl --fail --show-error --silent --location --retry 3 --connect-timeout 20 --max-time 300 \
+      "https://github.com/anomalyco/opencode/releases/download/v$version/$asset" \
+      --output "$tmp/$asset"; \
+    printf '%s  %s\n' "$checksum" "$tmp/$asset" | sha256sum -c -; \
+    tar -xzf "$tmp/$asset" -C "$tmp" opencode; \
+    install -m 0755 "$tmp/opencode" /usr/local/bin/opencode
+
+ENV OPENCODE_SERVER_BIN=/usr/local/bin/opencode
+ENV CLI_OPENCODE_BIN=/usr/local/bin/opencode
 
 ENV NODE_ENV=production
 ENV PORT=20128
@@ -104,6 +128,11 @@ RUN find /app \
 RUN chown -R bun:bun /app /app/data
 
 USER bun
+
+# Fail the image build if the installed CLI cannot execute as the runtime user.
+RUN test "$(command -v opencode)" = "$OPENCODE_SERVER_BIN" \
+  && opencode --version \
+  && opencode serve --help >/dev/null
 
 EXPOSE 20128
 
