@@ -45,8 +45,12 @@ const OWNER = "cheaper-inference";
  * parallel (docker-org-mirror.yml).
  */
 const DOCKERHUB_OWNERS = ["diegosouzapw", "cheaperinference"];
+/**
+ * GHCR: the organization package, plus the legacy personal package ghcr.io/diegosouzapw/omniroute
+ * that keeps receiving releases until 2027-06-30 (docker-org-mirror.yml, mirror-legacy-ghcr).
+ */
 const REGISTRY_OWNERS: Record<string, string[]> = {
-  "ghcr.io": [OWNER],
+  "ghcr.io": [OWNER, "diegosouzapw"],
   "docker.io": DOCKERHUB_OWNERS,
   "index.docker.io": DOCKERHUB_OWNERS,
 };
@@ -67,7 +71,13 @@ test("no workflow publishes to another owner's container registry", () => {
     // right after the registry host.
     for (const m of text.matchAll(/\b(ghcr\.io|(?:index\.)?docker\.io)\/([A-Za-z0-9_.-]+)/g)) {
       const [, host, owner] = m;
-      if (!REGISTRY_OWNERS[host].includes(owner.toLowerCase())) {
+      // This fork owns exactly these two publishers. Do not permit its registry in
+      // any inherited workflow or in an arbitrary newly added workflow.
+      const isForkPublisher =
+        host === "ghcr.io" &&
+        owner.toLowerCase() === "atmediallc" &&
+        ["docker-bun-publish.yml", "docker-2-publish.yml"].includes(path.basename(file));
+      if (!REGISTRY_OWNERS[host].includes(owner.toLowerCase()) && !isForkPublisher) {
         offenders.push(`${path.basename(file)} → ${m[0]}`);
       }
     }
