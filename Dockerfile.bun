@@ -80,6 +80,15 @@ ENV NODE_ENV=production
 # Bun native Next.js build execution
 RUN bun run --quiet build
 
+# ── Materialize the installed Playwright packages for the web image only ─────
+FROM builder AS playwright-packages
+# Bun may install packages as symlinks into its store. Copy their real contents
+# instead of relying on Next.js tracing or copying build-machine symlinks.
+RUN mkdir -p /opt/playwright-packages \
+  && cp -RL node_modules/playwright node_modules/playwright-core /opt/playwright-packages/ \
+  && test -f /opt/playwright-packages/playwright/cli.js \
+  && test -f /opt/playwright-packages/playwright-core/package.json
+
 # ── Runner Base stage (100% Bun Native Production Runtime) ──────────────────
 FROM oven/bun:1.4.4-slim AS runner-base
 
@@ -154,6 +163,13 @@ ENTRYPOINT ["bun", "dev/run-standalone.mjs"]
 FROM runner-base AS runner-web
 
 USER root
+
+# Replace any partial or symlinked copies from the standalone trace with the
+# exact packages installed by the builder. No registry fetch or version drift.
+RUN rm -rf /app/node_modules/playwright /app/node_modules/playwright-core
+COPY --from=playwright-packages --chown=bun:bun /opt/playwright-packages/ ./node_modules/
+RUN test -f node_modules/playwright/cli.js \
+  && bun -e 'const p = require("playwright/package.json"); const c = require("playwright-core/package.json"); if (p.version !== c.version) throw new Error("Playwright version mismatch");'
 
 # Chromium comes from Playwright, exactly as in the Node runner-web (Dockerfile), not
 # from apt:

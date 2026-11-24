@@ -78,9 +78,13 @@ async function launch(label, options) {
 PROBE
 
 {
-  echo "FROM $BASE"
+  # Supply the real stage's COPY source from the already materialized fixture
+  # packages, not a fake pre-populated runner-base node_modules directory.
+  echo "FROM $BASE AS playwright-packages"
+  echo "COPY node_modules/ /opt/playwright-packages/"
+  echo "FROM $BASE AS runner-base"
   echo "WORKDIR /app"
-  echo "COPY node_modules/ /app/node_modules/"
+  echo "FROM runner-base AS runner-web"
   printf '%s\n' "$STAGE"
   echo "COPY probe.cjs /tmp/probe.cjs"
   echo "RUN bun /tmp/probe.cjs"

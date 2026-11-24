@@ -915,9 +915,17 @@ function repairEmptyExternalPackageDirs(projectRoot, bundleNodeModules) {
     // under heavy concurrent build I/O (a transient readdirSync race, not a real
     // hollow placeholder), or a stale non-directory node from an earlier pass.
     if (resolvesToSamePath(sourcePkgDir, bundlePkgDir)) continue;
-    if (!isPartial) clearStaleDest(bundlePkgDir);
+    // Preserve real partial directories, but never overlay a symlink pointing
+    // outside the bundle. Bun's isolated linker also exposes source packages
+    // as symlinks; resolve that root before copying into the real directory.
+    if (!isPartial || fsSync.lstatSync(bundlePkgDir).isSymbolicLink()) {
+      clearStaleDest(bundlePkgDir);
+    }
 
-    fsSync.cpSync(sourcePkgDir, bundlePkgDir, { recursive: true, force: true });
+    fsSync.cpSync(fsSync.realpathSync(sourcePkgDir), bundlePkgDir, {
+      recursive: true,
+      force: true,
+    });
     summary.repaired += 1;
     summary.packages.push(name);
   }

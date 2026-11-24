@@ -46,6 +46,19 @@ test("Bun runner-web installs Playwright's own Chromium, like the Node runner-we
   );
 });
 
+test("Bun runner-web explicitly materializes both Playwright packages before install", () => {
+  const source = instructions(stageBody(read("Dockerfile.bun"), "playwright-packages"));
+  assert.match(source, /cp -RL node_modules\/playwright node_modules\/playwright-core/);
+  assert.match(source, /test -f \/opt\/playwright-packages\/playwright\/cli\.js/);
+  const copy = "COPY --from=playwright-packages --chown=bun:bun /opt/playwright-packages/ ./node_modules/";
+  assert.ok(bunWeb.includes(copy));
+  assert.ok(bunWeb.indexOf(copy) < bunWeb.indexOf("install chromium --with-deps"));
+  assert.match(bunWeb, /Playwright version mismatch/);
+  const smoke = read("scripts/release/preflight-bun-apt-smoke.sh");
+  assert.match(smoke, /AS playwright-packages/);
+  assert.match(smoke, /COPY node_modules\/ \/opt\/playwright-packages\//);
+});
+
 test("Bun runner-web ships Xvfb for headed Chromium (#15300)", () => {
   assert.match(bunWeb, /apt-get install -y --no-install-recommends xvfb/);
 });

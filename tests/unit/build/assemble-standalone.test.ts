@@ -368,3 +368,30 @@ test("copy passes tolerate a dest that already resolves to src, or a stale-typed
 
   fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
+
+test("repairs a partial ONNX package when the source package is a Bun store symlink", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "assemble-onnx-symlink-"));
+  try {
+    const projectRoot = path.join(tmp, "project");
+    seedSidecarSources(projectRoot);
+    const actual = path.join(projectRoot, "node_modules/.bun/onnxruntime-node/node_modules/onnxruntime-node");
+    fs.mkdirSync(path.join(actual, "bin"), { recursive: true });
+    fs.writeFileSync(path.join(actual, "package.json"), JSON.stringify({ name: "onnxruntime-node", version: "1.30.0" }));
+    fs.writeFileSync(path.join(actual, "bin", "native.so"), "native");
+    fs.symlinkSync(actual, path.join(projectRoot, "node_modules/onnxruntime-node"), process.platform === "win32" ? "junction" : "dir");
+    const distDir = path.join(projectRoot, ".build/next");
+    const outDir = path.join(distDir, "standalone");
+    const partial = path.join(outDir, "node_modules/onnxruntime-node");
+    fs.mkdirSync(partial, { recursive: true });
+    fs.writeFileSync(path.join(partial, "traced.js"), "preserve");
+    fs.writeFileSync(path.join(outDir, "server.js"), "// server");
+    assembleStandalone({ distDir, outDir, projectRoot, copyNatives: true });
+    assert.equal(fs.lstatSync(partial).isDirectory(), true);
+    assert.equal(fs.readFileSync(path.join(partial, "traced.js"), "utf8"), "preserve");
+    assert.equal(fs.readFileSync(path.join(partial, "bin/native.so"), "utf8"), "native");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(partial, "package.json"), "utf8")).name, "onnxruntime-node");
+    assert.ok(fs.lstatSync(path.join(projectRoot, "node_modules/onnxruntime-node")).isSymbolicLink());
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
