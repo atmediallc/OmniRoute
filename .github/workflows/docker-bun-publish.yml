@@ -311,8 +311,8 @@ jobs:
           print("Provider documentation frontmatter: OK")
           PY
 
-      # Repair the temporary Bun build context only; leave upstream source files intact.
-      - name: Repair Bun web standalone dependencies
+      # Next standalone omitted the transitive @next/env package in the last build.
+      - name: Repair Bun standalone Next.js runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -321,48 +321,32 @@ jobs:
 
           docker = Path("Dockerfile.bun")
           source = docker.read_text()
-          stage = "FROM runner-base AS runner-web\n\nUSER root\n"
-          if source.count(stage) != 1:
-              raise SystemExit("Unexpected Bun runner-web stage")
-          if "bun node_modules/playwright/cli.js install chromium --with-deps" in source:
-              if "AS playwright-packages" not in source and "COPY --from=builder /app/node_modules/playwright " not in source:
-                  anchor = "FROM runner-base AS runner-web"
-                  # Materialize Bun store symlinks inside the builder-derived stage.
-                  extra = """FROM builder AS playwright-packages
-          RUN mkdir -p /opt/playwright-packages && cp -RL /app/node_modules/playwright /app/node_modules/playwright-core /opt/playwright-packages/ && test -f /opt/playwright-packages/playwright/cli.js && test -f /opt/playwright-packages/playwright-core/package.json
-
+          install = "RUN bun install --include=optional --quiet"
+          if source.count(install) != 1:
+              raise SystemExit("Unexpected Bun dependency install")
+          # Avoid build-only isolated store links in the standalone module tree.
+          source = source.replace(install, "RUN bun install --linker hoisted --include=optional --quiet", 1)
+          anchor = "RUN bun run --quiet build\n"
+          if source.count(anchor) != 1:
+              raise SystemExit("Unexpected Bun builder")
+          # Use the exact package selected by the installed Next.js dependency.
+          fix = """RUN bun run --quiet build
+          RUN set -eu; env_pkg="$(bun -e 'const {createRequire}=require("node:module"); const r=createRequire(require.resolve("next/package.json")); process.stdout.write(r.resolve("@next/env/package.json"));')"; mkdir -p /app/.build/next/standalone/node_modules/@next; rm -rf /app/.build/next/standalone/node_modules/@next/env; cp -RL "$(dirname "$env_pkg")" /app/.build/next/standalone/node_modules/@next/env; test -f /app/.build/next/standalone/node_modules/@next/env/package.json
           """
-                  source = source.replace(anchor, extra + anchor, 1)
-                  source = source.replace(stage, stage + """
-          RUN rm -rf /app/node_modules/playwright /app/node_modules/playwright-core
-          COPY --from=playwright-packages --chown=bun:bun /opt/playwright-packages/ ./node_modules/
-          RUN test -f node_modules/playwright/cli.js && bun -e 'const p = require("playwright/package.json"); const c = require("playwright-core/package.json"); if (p.version !== c.version) throw new Error("Playwright version mismatch");'
-          """, 1)
-                  docker.write_text(source)
-              print("Bun web: explicit Playwright runtime packages ready")
-          else:
-              raise SystemExit("Unexpected Chromium installation command; review Bun compatibility")
+          source = source.replace(anchor, fix, 1)
+          anchor = "USER bun\n\n# Fail the image build if the installed CLI"
+          if source.count(anchor) != 1:
+              raise SystemExit("Unexpected Bun runtime user")
+          source = source.replace(anchor, """USER bun
 
-          assembler = Path("scripts/build/assembleStandalone.mjs")
-          source = assembler.read_text()
-          old = """    if (!isPartial) clearStaleDest(bundlePkgDir);
+          # Validate the final runtime image, not the builder.
+          RUN bun -e 'require("@next/env"); require("next/dist/server/config"); console.log("Next runtime dependencies: OK");'
 
-              fsSync.cpSync(sourcePkgDir, bundlePkgDir, { recursive: true, force: true });"""
-          new = """    if (!isPartial || fsSync.lstatSync(bundlePkgDir).isSymbolicLink()) {
-                clearStaleDest(bundlePkgDir);
-              }
-
-              fsSync.cpSync(fsSync.realpathSync(sourcePkgDir), bundlePkgDir, {
-                recursive: true,
-                force: true,
-              });"""
-          if source.count(old) == 1:
-              assembler.write_text(source.replace(old, new, 1))
-              print("Bun standalone: resolve package-store symlinks during partial repair")
-          elif source.count(new) != 1:
-              raise SystemExit("Unexpected standalone package repair; review Bun compatibility")
+          # Fail the image build if the installed CLI""", 1)
+          docker.write_text(source)
           PY
           git diff --check
+          git diff --stat
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -418,6 +402,52 @@ jobs:
             ${{ env.GHCR_IMAGE_NAME }}
           cache-from: type=gha,scope=omniroute-bun-${{ matrix.arch }}
           cache-to: type=gha,scope=omniroute-bun-${{ matrix.arch }},mode=max,ignore-error=true
+
+      # Both native architectures must start before publishing version manifests.
+      # Test immutable digests, not mutable tags.
+      - name: Smoke-test Bun images by digest before publication
+        shell: bash
+        env:
+          BASE_DIGEST: ${{ steps.bun-base.outputs.digest }}
+          WEB_DIGEST: ${{ steps.bun-web.outputs.digest }}
+        run: |
+          set -euo pipefail
+          name=""
+          cleanup() {
+            if [[ -n "$name" ]]; then
+              docker rm -f "$name" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          for entry in "base:$BASE_DIGEST" "web:$WEB_DIGEST"; do
+            variant="${entry%%:*}"
+            digest="${entry#*:}"
+            if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::Invalid $variant image digest"
+              exit 1
+            fi
+            ref="$GHCR_IMAGE_NAME@$digest"
+            name="omniroute-bun-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.arch }}-$variant"
+            docker pull --platform "${{ matrix.platform }}" "$ref"
+            docker run --platform "${{ matrix.platform }}" -d --name "$name" "$ref" >/dev/null
+            healthy=false
+            for attempt in $(seq 1 60); do
+              state=$(docker inspect -f '{{.State.Status}}' "$name")
+              health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$name")
+              if [[ "$health" == healthy ]]; then healthy=true; break; fi
+              if [[ "$state" == exited || "$health" == unhealthy ]]; then break; fi
+              sleep 3
+            done
+            if [[ "$healthy" != true ]]; then
+              docker logs --tail 150 "$name" || true
+              docker inspect -f '{{json .State.Health}}' "$name" || true
+              echo "::error::Bun $variant smoke failed on ${{ matrix.platform }}"
+              exit 1
+            fi
+            cleanup
+            name=""
+            echo "Bun $variant healthy on ${{ matrix.platform }}"
+          done
 
       - name: Export Bun digests
         shell: bash
