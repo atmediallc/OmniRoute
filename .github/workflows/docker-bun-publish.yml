@@ -311,6 +311,59 @@ jobs:
           print("Provider documentation frontmatter: OK")
           PY
 
+      # Repair the temporary Bun build context only; leave upstream source files intact.
+      - name: Repair Bun web standalone dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          docker = Path("Dockerfile.bun")
+          source = docker.read_text()
+          stage = "FROM runner-base AS runner-web\n\nUSER root\n"
+          if source.count(stage) != 1:
+              raise SystemExit("Unexpected Bun runner-web stage")
+          if "bun node_modules/playwright/cli.js install chromium --with-deps" in source:
+              if "AS playwright-packages" not in source and "COPY --from=builder /app/node_modules/playwright " not in source:
+                  anchor = "FROM runner-base AS runner-web"
+                  # Materialize Bun store symlinks inside the builder-derived stage.
+                  extra = """FROM builder AS playwright-packages
+          RUN mkdir -p /opt/playwright-packages && cp -RL /app/node_modules/playwright /app/node_modules/playwright-core /opt/playwright-packages/ && test -f /opt/playwright-packages/playwright/cli.js && test -f /opt/playwright-packages/playwright-core/package.json
+
+          """
+                  source = source.replace(anchor, extra + anchor, 1)
+                  source = source.replace(stage, stage + """
+          RUN rm -rf /app/node_modules/playwright /app/node_modules/playwright-core
+          COPY --from=playwright-packages --chown=bun:bun /opt/playwright-packages/ ./node_modules/
+          RUN test -f node_modules/playwright/cli.js && bun -e 'const p = require("playwright/package.json"); const c = require("playwright-core/package.json"); if (p.version !== c.version) throw new Error("Playwright version mismatch");'
+          """, 1)
+                  docker.write_text(source)
+              print("Bun web: explicit Playwright runtime packages ready")
+          else:
+              raise SystemExit("Unexpected Chromium installation command; review Bun compatibility")
+
+          assembler = Path("scripts/build/assembleStandalone.mjs")
+          source = assembler.read_text()
+          old = """    if (!isPartial) clearStaleDest(bundlePkgDir);
+
+              fsSync.cpSync(sourcePkgDir, bundlePkgDir, { recursive: true, force: true });"""
+          new = """    if (!isPartial || fsSync.lstatSync(bundlePkgDir).isSymbolicLink()) {
+                clearStaleDest(bundlePkgDir);
+              }
+
+              fsSync.cpSync(fsSync.realpathSync(sourcePkgDir), bundlePkgDir, {
+                recursive: true,
+                force: true,
+              });"""
+          if source.count(old) == 1:
+              assembler.write_text(source.replace(old, new, 1))
+              print("Bun standalone: resolve package-store symlinks during partial repair")
+          elif source.count(new) != 1:
+              raise SystemExit("Unexpected standalone package repair; review Bun compatibility")
+          PY
+          git diff --check
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
