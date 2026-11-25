@@ -159,6 +159,16 @@ jobs:
             echo "::warning::No dependency lockfile found"
           fi
 
+      - name: Apply fork-owned OpenCode overlay
+        shell: bash
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          git show "$WORKFLOW_SHA:scripts/fork/prepare-bun-dockerfile.mjs" > "$RUNNER_TEMP/prepare-bun-dockerfile.mjs"
+          node "$RUNNER_TEMP/prepare-bun-dockerfile.mjs" Dockerfile.bun
+          git diff --check
+
       # Only modify the temporary checkout used for the Bun image build.
       # The Node.js publish workflow and committed application files stay unchanged.
       - name: Prepare Bun-only build compatibility
@@ -182,32 +192,38 @@ jobs:
           )
           config_path.write_text(config)
 
-          # Validate Debian Trixie packages before checkout-only patches.
+          # Wolfi already supplies Playwright from the lockfile; the fork overlay
+          # materializes the web packages. Keep the old Debian path for old tags.
           dockerfile_path = Path("Dockerfile.bun")
           dockerfile = dockerfile_path.read_text()
-          if "libstdc++6" not in dockerfile:
-              raise SystemExit("Dockerfile.bun must contain libstdc++6")
-          import re
-          legacy = re.findall(r"(?m)^\s*(?:gconf-service|stdc\+\+6|fonts-kacst)\s*\\?\s*$", dockerfile)
-          if legacy:
-              raise SystemExit(f"Legacy Debian packages still present: {legacy}")
-          # Apply both fixes only to the temporary Bun build checkout.
           def replace_once(source, old, new, label):
               if source.count(old) != 1:
                   raise SystemExit(f"Unexpected {label}; review Bun compatibility patch")
               return source.replace(old, new, 1)
 
-          # Next standalone can omit Playwright CLI and leave symlinked packages.
-          # Copy the exact installed packages into runner-web, not runner-base.
-          builder_anchor = "RUN bun run --quiet build\n"
-          builder_fix = "RUN bun run --quiet build\n\n# Materialize installed packages for the web image; do not depend on Next tracing.\nFROM builder AS playwright-packages\nRUN mkdir -p /opt/playwright-packages && cp -RL node_modules/playwright node_modules/playwright-core /opt/playwright-packages/ && test -f /opt/playwright-packages/playwright/cli.js && test -f /opt/playwright-packages/playwright-core/package.json\n"
-          web_anchor = "FROM runner-base AS runner-web\n\nUSER root\n"
-          web_fix = "FROM runner-base AS runner-web\n\nUSER root\n\nRUN rm -rf /app/node_modules/playwright /app/node_modules/playwright-core\nCOPY --from=playwright-packages --chown=bun:bun /opt/playwright-packages/ ./node_modules/\nRUN test -f node_modules/playwright/cli.js && bun -e 'const p = require(\"playwright/package.json\"); const c = require(\"playwright-core/package.json\"); if (p.version !== c.version) throw new Error(\"Playwright version mismatch\");'\n"
-          if "bun node_modules/playwright/cli.js install chromium --with-deps" not in dockerfile:
-              raise SystemExit("Unexpected Bun Chromium install command")
-          dockerfile = replace_once(dockerfile, builder_anchor, builder_fix, "Bun builder")
-          dockerfile = replace_once(dockerfile, web_anchor, web_fix, "Bun web stage")
-          dockerfile_path.write_text(dockerfile)
+          if "FROM runtime-os AS runner-base\n" in dockerfile:
+              if "bun /opt/playwright/node_modules/playwright/cli.js install chromium" not in dockerfile:
+                  raise SystemExit("Unexpected Wolfi Chromium install command")
+              if "RUN apk add --no-cache git\n" not in dockerfile or "COPY --from=opencode-fetch /usr/local/bin/opencode /usr/local/bin/opencode" not in dockerfile:
+                  raise SystemExit("Missing fork OpenCode overlay")
+          else:
+              if "libstdc++6" not in dockerfile:
+                  raise SystemExit("Dockerfile.bun must contain libstdc++6")
+              import re
+              legacy = re.findall(r"(?m)^\s*(?:gconf-service|stdc\+\+6|fonts-kacst)\s*\\?\s*$", dockerfile)
+              if legacy:
+                  raise SystemExit(f"Legacy Debian packages still present: {legacy}")
+              # Next standalone can omit Playwright CLI and leave symlinked packages.
+              # Copy the exact installed packages into runner-web, not runner-base.
+              builder_anchor = "RUN bun run --quiet build\n"
+              builder_fix = "RUN bun run --quiet build\n\n# Materialize installed packages for the web image; do not depend on Next tracing.\nFROM builder AS playwright-packages\nRUN mkdir -p /opt/playwright-packages && cp -RL node_modules/playwright node_modules/playwright-core /opt/playwright-packages/ && test -f /opt/playwright-packages/playwright/cli.js && test -f /opt/playwright-packages/playwright-core/package.json\n"
+              web_anchor = "FROM runner-base AS runner-web\n\nUSER root\n"
+              web_fix = "FROM runner-base AS runner-web\n\nUSER root\n\nRUN rm -rf /app/node_modules/playwright /app/node_modules/playwright-core\nCOPY --from=playwright-packages --chown=bun:bun /opt/playwright-packages/ ./node_modules/\nRUN test -f node_modules/playwright/cli.js && bun -e 'const p = require(\"playwright/package.json\"); const c = require(\"playwright-core/package.json\"); if (p.version !== c.version) throw new Error(\"Playwright version mismatch\");'\n"
+              if "bun node_modules/playwright/cli.js install chromium --with-deps" not in dockerfile:
+                  raise SystemExit("Unexpected Bun Chromium install command")
+              dockerfile = replace_once(dockerfile, builder_anchor, builder_fix, "Bun builder")
+              dockerfile = replace_once(dockerfile, web_anchor, web_fix, "Bun web stage")
+              dockerfile_path.write_text(dockerfile)
 
           # The standalone ONNX repair must dereference the source package root
           # before copying into a real partial directory (Bun ENOTDIR failure).
@@ -217,7 +233,7 @@ jobs:
           new_copy = "    if (!isPartial || fsSync.lstatSync(bundlePkgDir).isSymbolicLink()) {\n      clearStaleDest(bundlePkgDir);\n    }\n\n    fsSync.cpSync(fsSync.realpathSync(sourcePkgDir), bundlePkgDir, {\n      recursive: true,\n      force: true,\n    });"
           assembler = replace_once(assembler, old_copy, new_copy, "standalone ONNX copy")
           assembler_path.write_text(assembler)
-          print("Bun compatibility: patched Playwright and ONNX in temporary checkout")
+          print("Bun compatibility: verified Playwright and patched ONNX in temporary checkout")
           PY
           git diff --check
           git diff --stat
