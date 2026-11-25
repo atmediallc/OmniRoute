@@ -88,10 +88,14 @@ jobs:
             fi
           done
 
-          # Preserve the two custom Docker/Bun workflows, byte for byte.
+          # Preserve fork-owned automation and build overlay, byte for byte.
           for FILE in \
             .github/workflows/docker-bun-publish.yml \
-            .github/workflows/docker-2-publish.yml; do
+            .github/workflows/docker-2-publish.yml \
+            .github/workflows/upstream-sync.yml \
+            .github/workflows/fork-bun-overlay-check.yml \
+            scripts/fork/prepare-bun-dockerfile.mjs \
+            tests/unit/build/fork-bun-dockerfile-overlay.test.mjs; do
             BEFORE="$(git rev-parse "${BASE}:${FILE}")"
             AFTER="$(git rev-parse "HEAD:${FILE}")"
             if [[ "$BEFORE" != "$AFTER" ]]; then
@@ -100,11 +104,7 @@ jobs:
             fi
           done
 
-          if git diff --quiet "$BASE" HEAD; then
-            echo 'No file changes to propose.' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          if [[ -n "$PR_NUMBER" ]] && git diff --quiet "refs/remotes/origin/${SYNC_BRANCH}" HEAD; then
+          if [[ -n "$PR_NUMBER" ]] && [[ "$(git rev-parse "refs/remotes/origin/${SYNC_BRANCH}")" == "$(git rev-parse HEAD)" ]]; then
             echo "PR #$PR_NUMBER already contains these upstream changes." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -121,7 +121,7 @@ jobs:
               "Target: $TARGET_BRANCH ($BASE_SHA)" \
               '' \
               '- Histories merged; no reset or force push.' \
-              '- Fork-owned Docker/Bun workflows verified unchanged.' \
+              '- Fork-owned Docker/Bun workflows and OpenCode overlay verified unchanged.' \
               '- Review changes, required tests, and migrations before merging.' \
               '- Manual merge only; this workflow never publishes images.' \
               > "$RUNNER_TEMP/upstream-sync-pr.md"
