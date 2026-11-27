@@ -337,11 +337,20 @@ jobs:
 
           docker = Path("Dockerfile.bun")
           source = docker.read_text()
-          install = "RUN bun install --include=optional --quiet"
-          if source.count(install) != 1:
-              raise SystemExit("Unexpected Bun dependency install")
+          # Support both the reproducible upstream install and older release tags.
+          # Keep every upstream flag and the continuation (including the pinned Bun check).
+          install_variants = (
+              "RUN bun install --frozen-lockfile --ignore-scripts --include=optional --quiet",
+              "RUN bun install --include=optional --quiet",
+          )
+          matches = [command for command in install_variants if command in source]
+          if len(matches) != 1 or source.count(matches[0]) != 1:
+              raise SystemExit("Unexpected Bun dependency install; review upstream Dockerfile")
+          install = matches[0]
           # Avoid build-only isolated store links in the standalone module tree.
-          source = source.replace(install, "RUN bun install --linker hoisted --include=optional --quiet", 1)
+          source = source.replace(
+              install, install.replace("RUN bun install ", "RUN bun install --linker hoisted ", 1), 1
+          )
           anchor = "RUN bun run --quiet build\n"
           if source.count(anchor) != 1:
               raise SystemExit("Unexpected Bun builder")
