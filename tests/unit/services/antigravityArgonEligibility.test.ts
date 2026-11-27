@@ -32,7 +32,7 @@ test("applyAntigravityArgonEligibilityToPsd: when hasArgon is false on empty psd
 
   assert.equal(result.changed, true);
   assert.equal(result.nextPsd.hasArgon, false);
-  assert.deepEqual(result.nextPsd.excludedModels, ["gemini-4*", "*argon*"]);
+  assert.deepEqual(result.nextPsd.excludedModels, ["*argon*"]);
 });
 
 test("applyAntigravityArgonEligibilityToPsd: when hasArgon is false preserves existing operator exclusions", () => {
@@ -43,30 +43,25 @@ test("applyAntigravityArgonEligibilityToPsd: when hasArgon is false preserves ex
 
   assert.equal(result.changed, true);
   assert.equal(result.nextPsd.hasArgon, false);
-  assert.deepEqual(result.nextPsd.excludedModels, [
-    "claude-3-haiku*",
-    "gpt-4*",
-    "gemini-4*",
-    "*argon*",
-  ]);
+  assert.deepEqual(result.nextPsd.excludedModels, ["claude-3-haiku*", "gpt-4*", "*argon*"]);
 });
 
 test("applyAntigravityArgonEligibilityToPsd: when hasArgon is false is idempotent", () => {
   const psd = {
     hasArgon: false,
-    excludedModels: ["claude-3-haiku*", "gemini-4*", "*argon*"],
+    excludedModels: ["claude-3-haiku*", "*argon*"],
   };
   const result = applyAntigravityArgonEligibilityToPsd(psd, false);
 
   assert.equal(result.changed, false);
   assert.equal(result.nextPsd.hasArgon, false);
-  assert.deepEqual(result.nextPsd.excludedModels, ["claude-3-haiku*", "gemini-4*", "*argon*"]);
+  assert.deepEqual(result.nextPsd.excludedModels, ["claude-3-haiku*", "*argon*"]);
 });
 
-test("applyAntigravityArgonEligibilityToPsd: when hasArgon is true strips auto-managed patterns", () => {
+test("applyAntigravityArgonEligibilityToPsd: when hasArgon is true strips only Argon", () => {
   const psd = {
     hasArgon: false,
-    excludedModels: ["claude-3-haiku*", "gemini-4*", "*argon*"],
+    excludedModels: ["claude-3-haiku*", "*argon*"],
   };
   const result = applyAntigravityArgonEligibilityToPsd(psd, true);
 
@@ -131,6 +126,15 @@ test("isModelExcludedByConnection: integrates correctly with applyAntigravityArg
     true
   );
 
+  for (const model of [
+    "gemini-4-neon-high",
+    "gemini-4-hydrogen-xhigh",
+    "agy/gemini-4-hydrogen-high",
+    "antigravity/gemini-4-carbon-high",
+  ]) {
+    assert.equal(isModelExcludedByConnection(model, ineligiblePsd), false, model);
+  }
+
   assert.equal(isModelExcludedByConnection("gemini-3.8-flash", ineligiblePsd), false);
   assert.equal(isModelExcludedByConnection("gemini-2.5-pro", ineligiblePsd), false);
 
@@ -146,4 +150,48 @@ test("isModelExcludedByConnection: integrates correctly with applyAntigravityArg
   );
 
   assert.equal(isModelExcludedByConnection("claude-3-haiku-20240307", eligiblePsd), true);
+});
+
+test("ambiguous Gemini 4 exclusions are preserved until the operator removes them", () => {
+  for (const excludedModels of [
+    ["gemini-4*", "*argon*"],
+    ["*argon*", "gemini-4*"],
+    ["gemini-4*", "claude-3-haiku*", "*argon*"],
+  ]) {
+    const psd = { hasArgon: false, excludedModels };
+    const ineligible = applyAntigravityArgonEligibilityToPsd(psd, false);
+    assert.equal(ineligible.changed, false);
+    assert.deepEqual(ineligible.nextPsd.excludedModels, excludedModels);
+
+    const eligible = applyAntigravityArgonEligibilityToPsd(psd, true);
+    assert.equal(eligible.changed, true);
+    assert.deepEqual(
+      eligible.nextPsd.excludedModels,
+      excludedModels.filter((pattern) => pattern !== "*argon*")
+    );
+    assert.equal(isModelExcludedByConnection("gemini-4-hydrogen-high", eligible.nextPsd), true);
+  }
+});
+
+test("explicit legacy cleanup restores non-Argon Gemini 4 and survives quota refresh", () => {
+  const psd = {
+    hasArgon: false,
+    excludedModels: ["claude-3-haiku*", "gemini-4*", "*argon*"],
+  };
+  // Simulate the operator removing the unintended broad rule in Edit Connection.
+  const cleaned = {
+    ...psd,
+    excludedModels: psd.excludedModels.filter((pattern) => pattern !== "gemini-4*"),
+  };
+
+  let current: Record<string, unknown> = cleaned;
+  for (const hasArgon of [false, false, true, false]) {
+    current = applyAntigravityArgonEligibilityToPsd(current, hasArgon).nextPsd;
+    for (const prefix of ["agy/", "antigravity/"]) {
+      assert.equal(isModelExcludedByConnection(prefix + "gemini-4-hydrogen-high", current), false);
+      assert.equal(isModelExcludedByConnection(prefix + "gemini-4-argon-high", current), !hasArgon);
+    }
+    assert.equal(isModelExcludedByConnection("claude-3-haiku-20240307", current), true);
+  }
+  assert.deepEqual(current.excludedModels, ["claude-3-haiku*", "*argon*"]);
 });

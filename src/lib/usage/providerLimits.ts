@@ -734,7 +734,10 @@ async function syncClaudeExtraUsageStateIfNeeded(
   };
 }
 
-const AUTO_MANAGED_ARGON_EXCLUSION_PATTERNS = ["gemini-4*", "*argon*"] as const;
+// Missing Argon quota must not exclude the rest of Gemini 4 (#21137).
+// Legacy gemini-4* rules have no ownership metadata. Keep them until the
+// operator explicitly removes the unintended rule from the connection.
+const AUTO_MANAGED_ARGON_EXCLUSION_PATTERNS = ["*argon*"] as const;
 
 /** Ineligible: flag the account and append the auto-managed Argon exclusions (keeps operator ones). */
 function markArgonIneligible(
