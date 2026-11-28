@@ -43,25 +43,25 @@ test("applyAntigravityArgonEligibilityToPsd: when hasArgon is false preserves ex
 
   assert.equal(result.changed, true);
   assert.equal(result.nextPsd.hasArgon, false);
-  assert.deepEqual(result.nextPsd.excludedModels, ["claude-3-haiku*", "gpt-4*", "*argon*"]);
+  assert.deepEqual(result.nextPsd.excludedModels, ["*argon*", "claude-3-haiku*", "gpt-4*"]);
 });
 
 test("applyAntigravityArgonEligibilityToPsd: when hasArgon is false is idempotent", () => {
   const psd = {
     hasArgon: false,
-    excludedModels: ["claude-3-haiku*", "*argon*"],
+    excludedModels: ["*argon*", "claude-3-haiku*"],
   };
   const result = applyAntigravityArgonEligibilityToPsd(psd, false);
 
   assert.equal(result.changed, false);
   assert.equal(result.nextPsd.hasArgon, false);
-  assert.deepEqual(result.nextPsd.excludedModels, ["claude-3-haiku*", "*argon*"]);
+  assert.deepEqual(result.nextPsd.excludedModels, ["*argon*", "claude-3-haiku*"]);
 });
 
-test("applyAntigravityArgonEligibilityToPsd: when hasArgon is true strips only Argon", () => {
+test("applyAntigravityArgonEligibilityToPsd: when hasArgon is true strips auto-managed patterns", () => {
   const psd = {
     hasArgon: false,
-    excludedModels: ["claude-3-haiku*", "*argon*"],
+    excludedModels: ["claude-3-haiku*", "gemini-4*", "*argon*"],
   };
   const result = applyAntigravityArgonEligibilityToPsd(psd, true);
 
@@ -129,7 +129,7 @@ test("isModelExcludedByConnection: integrates correctly with applyAntigravityArg
   for (const model of [
     "gemini-4-neon-high",
     "gemini-4-hydrogen-xhigh",
-    "agy/gemini-4-hydrogen-high",
+    "gemini-4-hydrogen-tiered-high",
     "antigravity/gemini-4-carbon-high",
   ]) {
     assert.equal(isModelExcludedByConnection(model, ineligiblePsd), false, model);
@@ -152,46 +152,41 @@ test("isModelExcludedByConnection: integrates correctly with applyAntigravityArg
   assert.equal(isModelExcludedByConnection("claude-3-haiku-20240307", eligiblePsd), true);
 });
 
-test("ambiguous Gemini 4 exclusions are preserved until the operator removes them", () => {
-  for (const excludedModels of [
-    ["gemini-4*", "*argon*"],
-    ["*argon*", "gemini-4*"],
-    ["gemini-4*", "claude-3-haiku*", "*argon*"],
-  ]) {
-    const psd = { hasArgon: false, excludedModels };
-    const ineligible = applyAntigravityArgonEligibilityToPsd(psd, false);
-    assert.equal(ineligible.changed, false);
-    assert.deepEqual(ineligible.nextPsd.excludedModels, excludedModels);
-
-    const eligible = applyAntigravityArgonEligibilityToPsd(psd, true);
-    assert.equal(eligible.changed, true);
-    assert.deepEqual(
-      eligible.nextPsd.excludedModels,
-      excludedModels.filter((pattern) => pattern !== "*argon*")
-    );
-    assert.equal(isModelExcludedByConnection("gemini-4-hydrogen-high", eligible.nextPsd), true);
-  }
-});
-
-test("explicit legacy cleanup restores non-Argon Gemini 4 and survives quota refresh", () => {
+// Earlier releases wrote the adjacent pair "gemini-4*", "*argon*" on accounts without Argon,
+// which blocked every Gemini 4 model (#21132). Dropping the pattern from the code is not enough:
+// the pair is already stored, so a quota refresh has to repair it.
+test("a refresh drops the stored legacy gemini-4* from an Argon-ineligible account", () => {
   const psd = {
     hasArgon: false,
     excludedModels: ["claude-3-haiku*", "gemini-4*", "*argon*"],
   };
-  // Simulate the operator removing the unintended broad rule in Edit Connection.
-  const cleaned = {
-    ...psd,
-    excludedModels: psd.excludedModels.filter((pattern) => pattern !== "gemini-4*"),
-  };
+  const result = applyAntigravityArgonEligibilityToPsd(psd, false);
 
-  let current: Record<string, unknown> = cleaned;
-  for (const hasArgon of [false, false, true, false]) {
-    current = applyAntigravityArgonEligibilityToPsd(current, hasArgon).nextPsd;
-    for (const prefix of ["agy/", "antigravity/"]) {
-      assert.equal(isModelExcludedByConnection(prefix + "gemini-4-hydrogen-high", current), false);
-      assert.equal(isModelExcludedByConnection(prefix + "gemini-4-argon-high", current), !hasArgon);
-    }
-    assert.equal(isModelExcludedByConnection("claude-3-haiku-20240307", current), true);
+  assert.equal(result.changed, true, "the repair must be persisted");
+  assert.deepEqual(result.nextPsd.excludedModels, ["claude-3-haiku*", "*argon*"]);
+  assert.equal(isModelExcludedByConnection("gemini-4-hydrogen-high", result.nextPsd), false);
+  assert.equal(isModelExcludedByConnection("gemini-4-argon-high", result.nextPsd), true);
+
+  const again = applyAntigravityArgonEligibilityToPsd(result.nextPsd, false);
+  assert.equal(again.changed, false, "the repair runs once");
+});
+
+test("an operator's own gemini-4* exclusion survives repeated refreshes", () => {
+  let psd: Record<string, unknown> = { excludedModels: ["gemini-4*"] };
+  for (let refresh = 0; refresh < 3; refresh += 1) {
+    psd = applyAntigravityArgonEligibilityToPsd(psd, false).nextPsd;
   }
-  assert.deepEqual(current.excludedModels, ["claude-3-haiku*", "*argon*"]);
+
+  assert.deepEqual(psd.excludedModels, ["*argon*", "gemini-4*"]);
+  assert.equal(isModelExcludedByConnection("gemini-4-hydrogen-high", psd), true);
+});
+
+test("an operator's gemini-4* away from the legacy pair survives a change of eligibility", () => {
+  const psd = { hasArgon: false, excludedModels: ["*argon*", "gpt-4*", "gemini-4*"] };
+
+  assert.equal(applyAntigravityArgonEligibilityToPsd(psd, false).changed, false);
+  assert.deepEqual(applyAntigravityArgonEligibilityToPsd(psd, true).nextPsd.excludedModels, [
+    "gpt-4*",
+    "gemini-4*",
+  ]);
 });
